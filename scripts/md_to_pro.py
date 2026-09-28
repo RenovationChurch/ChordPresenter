@@ -47,7 +47,7 @@ INBOX_DIR = ""  # Set via --inbox flag or Preferences; do not hardcode
 # become normal slides.
 SKIP_SECTION_RE = re.compile(r'^tab$', re.IGNORECASE)
 
-# Sentinel marking an explicit 2-line slide (used by ChordPresenter's Edit .pro
+# Sentinel marking an explicit multi-line slide (used by ChordPresenter's Edit .pro
 # mode when re-exporting an existing .pro's slides). U+E000 (Private Use Area)
 # never appears in real lyric/chord text and \u2014 unlike U+2028/U+2029 \u2014 is NOT
 # treated as a line boundary by str.splitlines(), so it survives intact
@@ -419,36 +419,43 @@ def parse_md_song(filepath: str):
             continue
 
         if is_chord_line(stripped):
-            pending_chord_line = stripped
+            # Keep the chord line's leading spaces: they ARE the alignment.
+            # Stripping them would slide every chord left onto the wrong word.
+            pending_chord_line = raw_line.expandtabs().rstrip()
             cur_chord_lines.append(stripped)
             continue
 
         # It's a lyric line
-        # Pair with the pending chord line for chord position mapping
+        # Pair with the pending chord line for chord position mapping. Columns
+        # are measured on the raw lines, then shifted by the lyric's own indent.
         chord_positions = {}
         if pending_chord_line is not None:
-            chord_positions = _map_chord_positions(pending_chord_line, stripped)
+            raw_lyric = raw_line.expandtabs()
+            indent = len(raw_lyric) - len(raw_lyric.lstrip())
+            chord_positions = _map_chord_positions(pending_chord_line, stripped,
+                                                   lyric_offset=indent)
             pending_chord_line = None
 
-        # ── Explicit 2-line slide sentinel (ChordPresenter Edit .pro mode) ──
-        # Bypasses the dash/comma heuristics below entirely — the two lines
+        # ── Explicit multi-line slide sentinel (ChordPresenter Edit .pro mode) ──
+        # Bypasses the dash/comma heuristics below entirely — the lines
         # are already known-good and must land on the same slide untouched.
         if SLIDE_LINE_SEP in stripped:
             parts = [p.strip() for p in stripped.split(SLIDE_LINE_SEP) if p.strip()]
             if len(parts) >= 2:
-                slide_entry = (parts[0], parts[1])
+                slide_entry = tuple(parts)
             elif parts:
                 slide_entry = parts[0]
             else:
                 continue
             cur_lines.append(slide_entry)
             cur_chords.append((slide_entry if isinstance(slide_entry, str)
-                               else f"{slide_entry[0]} {slide_entry[1]}",
+                               else " ".join(slide_entry),
                                chord_positions))
             continue
 
-        # Normalize chord-alignment spaces (e.g. "gave   me   one  more   day" → clean)
-        lyric_clean = re.sub(r'  +', ' ', stripped)
+        # Normalize chord-alignment spaces (e.g. "gave   me   one  more   day" → clean),
+        # moving each chord with the text it sits over.
+        lyric_clean, chord_positions = _collapse_spaces(stripped, chord_positions)
 
         # ── Dash rule: "An - other" → "Another" ─────────────────────────────
         # Worship charts use " - " to mark sustained syllable breaks within words.
@@ -500,26 +507,65 @@ def parse_md_song(filepath: str):
     return title, artist, sections, chord_map
 
 
-def _map_chord_positions(chord_line: str, lyric_line: str) -> dict:
+def _map_chord_positions(chord_line: str, lyric_line: str, lyric_offset: int = 0) -> dict:
     """
     Given a chord line and the lyric line beneath it, return a dict of
     {char_position_in_lyric: chord_name} for Phase 2 chord embedding.
 
+    chord_line must keep its leading spaces. lyric_offset is how far the
+    (stripped) lyric_line was indented in the source, so both are measured
+    from the same left edge.
+
     Example:
         chord_line = "       C/E    Dm   C    Bb    F/A"
         lyric_line = "'Cause You gave   me   one  more   day"
-        → {7: 'C/E', 11: 'Dm', 17: 'C', 21: 'Bb', 26: 'F/A'}
+        → {7: 'C/E', 14: 'Dm', 19: 'C', 24: 'Bb', 30: 'F/A'}
     """
     positions = {}
+    last = max(0, len(lyric_line) - 1)
     # Find each chord token and its position in the chord line
     for m in re.finditer(r'[A-G][#b]?\S*', chord_line):
         chord = m.group()
         if _is_chord_token(chord):
-            col = m.start()
-            # Map column to lyric character position (clamped)
-            lyric_pos = min(col, max(0, len(lyric_line) - 1))
-            positions[lyric_pos] = chord
+            # Map column to lyric character position (clamped to the lyric)
+            lyric_pos = min(max(0, m.start() - lyric_offset), last)
+            # Two chords clamped onto the same character (past the end of a
+            # short lyric) would overwrite each other — keep the first.
+            positions.setdefault(lyric_pos, chord)
     return positions
+
+
+def _collapse_spaces(text: str, positions: dict) -> tuple[str, dict]:
+    """Collapse runs of 2+ spaces to one and move chord positions with the text.
+
+    A chord that sat inside a collapsed gap moves onto the start of the next
+    word: charts pad lyrics with spaces to make room for a long chord name, and
+    the chord after the gap belongs to the next syllable.
+    """
+    out: list[str] = []
+    new_idx: list[int] = []            # original index → index in collapsed text
+    i = 0
+    while i < len(text):
+        if text[i] == ' ' and i + 1 < len(text) and text[i + 1] == ' ':
+            j = i
+            while j < len(text) and text[j] == ' ':
+                j += 1
+            out.append(' ')
+            # text is stripped, so a word always follows the gap and len(out)
+            # is that word's first character.
+            new_idx.extend([len(out)] * (j - i))
+            i = j
+        else:
+            new_idx.append(len(out))
+            out.append(text[i])
+            i += 1
+    moved: dict = {}
+    for pos, chord in sorted(positions.items()):
+        p = new_idx[pos] if pos < len(new_idx) else len(out) - 1
+        while p in moved and p < len(out) - 1:
+            p += 1                     # never let one chord overwrite another
+        moved.setdefault(p, chord)
+    return ''.join(out), moved
 
 
 # ────────────────────────────────────────────────────────────────

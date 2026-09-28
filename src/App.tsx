@@ -1,20 +1,26 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/tauri";
 import { open } from "@tauri-apps/api/dialog";
 import { listen } from "@tauri-apps/api/event";
 import "./App.css";
 import {
-  MAJOR_KEYS, MINOR_KEYS, analyzeKey, prefersFlats,
+  MAJOR_KEYS, MINOR_KEYS, analyzeKey, canonicalKey, prefersFlats,
   semitonesBetween, shiftKey, toConcert, transposeChart,
 } from "./music";
 import { buildPrintHtml } from "./print";
+import {
+  importToEditorText, parseEditorText, parsePcoChart, resolveArrangement,
+  toChordOverLyric, toSongJson,
+} from "./chordpro";
+import PcoBrowser, { PcoLoadedSong } from "./PcoBrowser";
+import SlideEditor from "./SlideEditor";
 
 // Sentinel used to join a slide's lyric lines into one exportable chart line
-// when a slide has 2 lines (Edit .pro mode). U+E000 (Private Use Area) never
+// when a slide has 2+ lines (Edit .pro mode). U+E000 (Private Use Area) never
 // appears in real lyric/chord text and — unlike U+2028/U+2029 — is NOT
 // treated as a line break by Python's str.splitlines(), so it survives the
 // splitlines() calls in ew_fetch.py/md_to_pro.py intact and lets md_to_pro.py
-// rebuild an explicit 2-line slide instead of splitting the lines into two
+// rebuild an explicit multi-line slide instead of splitting the lines into
 // separate 1-line slides. Must match SLIDE_LINE_SEP in md_to_pro.py.
 const SLIDE_LINE_SEP = "\ue000";
 
@@ -101,11 +107,22 @@ function normalizeChartHeaders(chart: string): string {
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 type Status     = "idle" | "running" | "ok" | "err";
-type Mode       = "file" | "url" | "pro";
+type Mode       = "file" | "url" | "pro" | "pco";
+type PrefsTab   = "folders" | "pco" | "log";
 type OutputMode = "both" | "lyrics";
 
 interface AppConfig {
   output_dir: string;
+  pco_app_id: string;
+  pco_secret: string;
+}
+
+const EMPTY_CONFIG: AppConfig = { output_dir: "", pco_app_id: "", pco_secret: "" };
+
+/** Stage-display note for the first slide (same text as md_to_pro.capo_note). */
+function capoNote(capo: number, concertKey: string, shapesKey: string): string {
+  return `CAPO ${capo} - chords are ${shapesKey} shapes (sounds in ${concertKey}).\n` +
+         `No capo / electric / keys: play in ${concertKey}.`;
 }
 
 interface EwData {
@@ -128,17 +145,20 @@ interface ProSlide {
 // ── Preferences panel ─────────────────────────────────────────────────────────
 function PreferencesPanel({
   config,
+  initialTab,
   onSave,
   onClose,
 }: {
   config: AppConfig;
+  initialTab: PrefsTab;
   onSave: (c: AppConfig) => void;
   onClose: () => void;
 }) {
   const [local, setLocal]     = useState<AppConfig>({ ...config });
   const [logPath, setLogPath] = useState("");
   const [logs, setLogs]       = useState("");
-  const [tab, setTab]         = useState<"folders" | "log">("folders");
+  const [tab, setTab]         = useState<PrefsTab>(initialTab);
+  const [pcoTest, setPcoTest] = useState<{ ok: boolean; text: string } | null>(null);
 
   useEffect(() => {
     invoke<string>("get_log_path").then(setLogPath);
@@ -150,10 +170,29 @@ function PreferencesPanel({
     if (typeof sel === "string") setLocal(prev => ({ ...prev, output_dir: sel }));
   };
 
+  const persist = () => invoke("save_config", {
+    outputDir: local.output_dir, pcoAppId: local.pco_app_id, pcoSecret: local.pco_secret,
+  });
+
   const save = async () => {
-    await invoke("save_config", { outputDir: local.output_dir });
+    await persist();
     onSave(local);
     onClose();
+  };
+
+  // pco.py reads the token from the config file, so save before testing.
+  const testPco = async () => {
+    setPcoTest({ ok: true, text: "Testing…" });
+    try {
+      await persist();
+      onSave(local);
+      const data = JSON.parse(await invoke<string>("pco", { command: "test" }));
+      setPcoTest(data.error
+        ? { ok: false, text: data.error }
+        : { ok: true, text: `Connected to ${data.organization || "Planning Center"}` });
+    } catch (err) {
+      setPcoTest({ ok: false, text: String(err) });
+    }
   };
 
   const clearLog = async () => {
@@ -180,6 +219,7 @@ function PreferencesPanel({
         {/* Tab bar */}
         <div className="prefs-tabs">
           <button className={`prefs-tab${tab === "folders" ? " active" : ""}`} onClick={() => setTab("folders")}>Folders</button>
+          <button className={`prefs-tab${tab === "pco"     ? " active" : ""}`} onClick={() => setTab("pco")}>Planning Center</button>
           <button className={`prefs-tab${tab === "log"     ? " active" : ""}`} onClick={() => setTab("log")}>Log</button>
         </div>
 
@@ -207,6 +247,38 @@ function PreferencesPanel({
           </div>
         )}
 
+        {/* Planning Center tab */}
+        {tab === "pco" && (
+          <div className="prefs-body">
+            <div className="prefs-note">
+              Create a <strong>Personal Access Token</strong> at{" "}
+              <code>api.planningcenteronline.com/oauth/applications</code> (signed in to your
+              church's account), then paste its Application ID and Secret here.
+              ChordPresenter only reads songs and plans.
+            </div>
+            <div className="prefs-row">
+              <span className="prefs-label">Application ID</span>
+              <input className="url-input" value={local.pco_app_id} spellCheck={false}
+                     onChange={e => setLocal(prev => ({ ...prev, pco_app_id: e.target.value }))} />
+            </div>
+            <div className="prefs-row">
+              <span className="prefs-label">Secret</span>
+              <input className="url-input" type="password" value={local.pco_secret} spellCheck={false}
+                     onChange={e => setLocal(prev => ({ ...prev, pco_secret: e.target.value }))} />
+              <div className="prefs-hint">Stored in ~/.config/chordpresenter/config.json, readable only by you.</div>
+            </div>
+            <div className="prefs-row-top">
+              <button className="prefs-browse" onClick={testPco}
+                      disabled={!local.pco_app_id.trim() || !local.pco_secret.trim()}>
+                Test connection
+              </button>
+              {pcoTest && (
+                <span className={`pco-test ${pcoTest.ok ? "ok" : "err"}`}>{pcoTest.text}</span>
+              )}
+            </div>
+          </div>
+        )}
+
         {/* Log tab */}
         {tab === "log" && (
           <div className="prefs-body prefs-body--log">
@@ -222,7 +294,7 @@ function PreferencesPanel({
         )}
 
         <div className="prefs-footer">
-          {tab === "folders" && <>
+          {tab !== "log" && <>
             <button className="prefs-cancel" onClick={onClose}>Cancel</button>
             <button className="prefs-save" onClick={save}>Save</button>
           </>}
@@ -238,13 +310,17 @@ function PreferencesPanel({
 // ── App ───────────────────────────────────────────────────────────────────────
 export default function App() {
   // ── Config / prefs ────────────────────────────────────────────
-  const [config, setConfig]       = useState<AppConfig>({ output_dir: "" });
+  const [config, setConfig]       = useState<AppConfig>(EMPTY_CONFIG);
   const [showPrefs, setShowPrefs] = useState(false);
+  const [prefsTab, setPrefsTab]   = useState<PrefsTab>("folders");
+  const openPrefs = useCallback((tab: PrefsTab = "folders") => {
+    setPrefsTab(tab); setShowPrefs(true);
+  }, []);
 
   // Load config on startup; open prefs automatically if output folder not set
   useEffect(() => {
     invoke<AppConfig>("get_config").then(cfg => {
-      setConfig(cfg);
+      setConfig({ ...EMPTY_CONFIG, ...cfg });
       if (cfg.output_dir) setOutputDir(cfg.output_dir);
       else setShowPrefs(true);  // first run — prompt user to set output folder
     });
@@ -252,9 +328,9 @@ export default function App() {
 
   // Listen for Preferences… menu item
   useEffect(() => {
-    const unsub = listen("open-preferences", () => setShowPrefs(true));
+    const unsub = listen("open-preferences", () => openPrefs());
     return () => { unsub.then(f => f()); };
-  }, []);
+  }, [openPrefs]);
 
   const handleConfigSave = (cfg: AppConfig) => {
     setConfig(cfg);
@@ -294,6 +370,14 @@ export default function App() {
   const [proTitle, setProTitle]   = useState("");
   const [proSlides, setProSlides] = useState<ProSlide[]>([]);
   const [proLoading, setProLoading] = useState(false);
+
+  // ── Planning Center mode state ─────────────────────────────────
+  const [pcoSong, setPcoSong]         = useState<PcoLoadedSong | null>(null);
+  const [pcoText, setPcoText]         = useState("");     // slide editor text
+  const [pcoOrder, setPcoOrder]       = useState("");     // arrangement, comma-separated
+  const [linesPerSlide, setLinesPerSlide] = useState(2);
+  const pcoSections = useMemo(() => parseEditorText(pcoText), [pcoText]);
+  const pcoConnected = Boolean(config.pco_app_id && config.pco_secret);
 
   // ── Switch mode ────────────────────────────────────────────────
   const switchMode = useCallback((m: Mode) => {
@@ -418,6 +502,34 @@ export default function App() {
     setStatus("idle"); setMessage("");
   }, []);
 
+  const clearPco = useCallback(() => {
+    setPcoSong(null); setPcoText(""); setPcoOrder("");
+    setDetectedKey(""); setTargetKey("");
+    setSourceCapo(0); setSourceShapes(""); setOutputCapo(0);
+    setStatus("idle"); setMessage("");
+  }, []);
+
+  // ── Planning Center: song picked → slide editor ────────────────
+  const loadPcoSong = useCallback((song: PcoLoadedSong) => {
+    const imported = parsePcoChart(song.chart);
+    const text = importToEditorText(imported, linesPerSlide);
+    const sections = parseEditorText(text);
+    // Key the chart is written in: PCO's chord_chart_key, then a {key:} line,
+    // then detection from the chords themselves.
+    const info = analyzeKey("", toChordOverLyric(sections),
+                            canonicalKey(song.chartKey) || canonicalKey(imported.key), 0);
+    applyKeyInfo(info);
+    // Coming from a plan: default to the key the song is scheduled in.
+    const planKey = canonicalKey(song.planKey);
+    if (planKey && info.chartKey) setTargetKey(planKey);
+    const { order } = resolveArrangement(song.sequence, sections);
+    setPcoOrder(order.map(i => sections[i].name).join(", "));
+    setPcoSong(song); setPcoText(text);
+    setOutputMode("both");
+    setStatus("idle");
+    setMessage(info.chartKey ? "" : "No chords found — this will export as lyrics only.");
+  }, [linesPerSlide, applyKeyInfo]);
+
   // ── Pro edit mode: update chords for a slide ───────────────────
   const updateSlideChords = useCallback((index: number, chords: string) => {
     setProSlides(prev =>
@@ -438,8 +550,8 @@ export default function App() {
     // (e.g. a second "Chorus") correctly starts a new, separate group there
     // too — matching how the original file was structured.
     //
-    // Slides with 2 lyric lines are joined with SLIDE_LINE_SEP so md_to_pro.py
-    // reconstructs a single 2-line slide instead of splitting them into two
+    // Slides with 2+ lyric lines are joined with SLIDE_LINE_SEP so md_to_pro.py
+    // reconstructs a single multi-line slide instead of splitting them into
     // separate 1-line slides (see matching constant there).
     const chartLines: string[] = [];
     let prevGroup: string | null = null;
@@ -500,6 +612,35 @@ export default function App() {
     }
   }, [mdPath, title, artist, fileChart, targetKey, detectedKey, outputCapo, outputDir, outputMode]);
 
+  // ── Planning Center: export the edited slides ──────────────────
+  const generateFromPco = useCallback(async () => {
+    if (!pcoSong) return;
+    const lyricsOnly = outputMode === "lyrics";
+    const key = targetKey || detectedKey;
+    const capo = lyricsOnly ? 0 : outputCapo;
+    let shapesKey = key, semitones = 0;
+    try {
+      if (key && capo) shapesKey = shiftKey(key, -capo);
+      if (detectedKey && shapesKey) semitones = semitonesBetween(detectedKey, shapesKey);
+    } catch { /* unknown key label — export chords as written */ }
+    const order = resolveArrangement(pcoOrder.split(",").filter(s => s.trim()), pcoSections).order;
+    const song = toSongJson(pcoSections, {
+      title: pcoSong.title, artist: pcoSong.artist, key, capo,
+      notes: capo ? capoNote(capo, key, shapesKey) : undefined,
+      lyricsOnly, semitones, preferFlat: prefersFlats(shapesKey),
+      arrangement: order.length ? order : undefined,
+    });
+    setStatus("running"); setMessage("Generating…");
+    try {
+      const out = await invoke<string>("generate_from_song", { songJson: JSON.stringify(song), outputDir });
+      setStatus("ok");
+      const match = out.match(/→\s+(.+\.pro)/);
+      setMessage(match ? `Saved: ${match[1]}` : (out.trim() || "Done!"));
+    } catch (err) {
+      setStatus("err"); setMessage(String(err));
+    }
+  }, [pcoSong, pcoSections, pcoOrder, targetKey, detectedKey, outputCapo, outputDir, outputMode]);
+
   // ── URL mode: fetch ────────────────────────────────────────────
   const fetchEW = useCallback(async () => {
     const url = urlInput.trim();
@@ -547,7 +688,8 @@ export default function App() {
 
   // ── Shared: print chart (current key + capo, as the stage monitor shows) ─
   const printChart = useCallback(async () => {
-    const chart = mode === "file" ? fileChart : editedChart;
+    const chart = mode === "file" ? fileChart
+                : mode === "pco" ? toChordOverLyric(pcoSections) : editedChart;
     if (!chart.trim()) return;
     const key = targetKey || detectedKey;
     const capo = outputMode === "lyrics" ? 0 : outputCapo;
@@ -558,8 +700,10 @@ export default function App() {
         printed = transposeChart(chart, semitonesBetween(detectedKey, shapesKey), prefersFlats(shapesKey));
       }
     } catch { /* unknown key label — print the chart as-is */ }
-    const songTitle = mode === "file" ? title : (ewData?.title || "");
-    const songArtist = mode === "file" ? artist : (ewData?.artist || "");
+    const songTitle = mode === "file" ? title
+                    : mode === "pco" ? (pcoSong?.title || "") : (ewData?.title || "");
+    const songArtist = mode === "file" ? artist
+                     : mode === "pco" ? (pcoSong?.artist || "") : (ewData?.artist || "");
     try {
       await invoke("open_print_view", {
         title: `${songTitle || "Chart"}${key ? ` - ${key}` : ""}${capo ? ` (Capo ${capo})` : ""}`,
@@ -568,7 +712,7 @@ export default function App() {
     } catch (err) {
       setStatus("err"); setMessage(`Print failed: ${err}`);
     }
-  }, [mode, fileChart, editedChart, targetKey, detectedKey, outputCapo, outputMode, title, artist, ewData]);
+  }, [mode, fileChart, editedChart, pcoSections, pcoSong, targetKey, detectedKey, outputCapo, outputMode, title, artist, ewData]);
 
   // ── Shared: output folder ──────────────────────────────────────
   const browseOutput = useCallback(async () => {
@@ -580,11 +724,14 @@ export default function App() {
   const hasFile     = Boolean(mdPath);
   const fileName    = mdPath.split("/").pop() ?? "";
   const hasOutputDir = Boolean(outputDir);
-  const canGenerate = hasOutputDir && (mode === "file"
-    ? hasFile && Boolean(fileChart) && status !== "running"
-    : Boolean(ewData) && !ewData?.error && status !== "running" && !isFetching);
+  const pcoHasSlides = pcoSections.some(s => s.slides.length > 0);
+  const canGenerate = hasOutputDir && status !== "running" && (
+    mode === "file" ? hasFile && Boolean(fileChart)
+    : mode === "pco" ? Boolean(pcoSong) && pcoHasSlides
+    : Boolean(ewData) && !ewData?.error && !isFetching);
 
-  const canPrint = Boolean((mode === "file" ? fileChart : editedChart).trim());
+  const canPrint = mode === "pco" ? pcoHasSlides
+    : Boolean((mode === "file" ? fileChart : editedChart).trim());
 
   // Key of the chord shapes written out for the current key + capo.
   let outputShapes = "";
@@ -593,7 +740,9 @@ export default function App() {
     if (k && outputCapo) outputShapes = shiftKey(k, -outputCapo);
   } catch { /* unknown key label */ }
 
-  const showSharedControls = (mode === "file" && hasFile) || Boolean(ewData && !ewData.error);
+  const showSharedControls = (mode === "file" && hasFile)
+    || (mode === "pco" && Boolean(pcoSong))
+    || (mode === "url" && Boolean(ewData && !ewData.error));
 
   return (
     <div className="app">
@@ -601,6 +750,7 @@ export default function App() {
       {showPrefs && (
         <PreferencesPanel
           config={config}
+          initialTab={prefsTab}
           onSave={handleConfigSave}
           onClose={() => setShowPrefs(false)}
         />
@@ -622,6 +772,9 @@ export default function App() {
         </button>
         <button className={`tab${mode === "url" ? " active" : ""}`} onClick={() => switchMode("url")}>
           🔗 URL
+        </button>
+        <button className={`tab${mode === "pco" ? " active" : ""}`} onClick={() => switchMode("pco")}>
+          📋 Planning Center
         </button>
         <button className={`tab${mode === "pro" ? " active" : ""}`} onClick={() => switchMode("pro")}>
           ✏️ Edit .pro
@@ -715,6 +868,42 @@ export default function App() {
         </>
       )}
 
+      {/* ══ PLANNING CENTER MODE ═══════════════════════════════════ */}
+      {mode === "pco" && (
+        <>
+          <PcoBrowser
+            connected={pcoConnected}
+            onLoad={loadPcoSong}
+            onOpenPrefs={() => openPrefs("pco")}
+            onError={msg => { setStatus("err"); setMessage(msg); }}
+          />
+
+          {pcoSong && (
+            <div className="ew-card">
+              <div className="ew-card-icon">🎵</div>
+              <div className="ew-card-meta">
+                <div className="ew-title">{pcoSong.title}</div>
+                <div className="ew-artist">
+                  {[pcoSong.artist, pcoSong.arrangementName].filter(Boolean).join(" · ")}
+                </div>
+              </div>
+              <button className="clear-btn" title="Clear" onClick={clearPco}>✕</button>
+            </div>
+          )}
+
+          {pcoSong && (
+            <SlideEditor
+              text={pcoText}
+              onChange={setPcoText}
+              arrangement={pcoOrder}
+              onArrangementChange={setPcoOrder}
+              linesPerSlide={linesPerSlide}
+              onLinesPerSlideChange={setLinesPerSlide}
+            />
+          )}
+        </>
+      )}
+
       {/* ══ EDIT .pro MODE ═════════════════════════════════════════ */}
       {mode === "pro" && (
         <>
@@ -804,7 +993,7 @@ export default function App() {
               {!hasOutputDir && (
                 <p className="no-output-warning">
                   ⚠️ No output folder set.{" "}
-                  <button className="link-btn" onClick={() => setShowPrefs(true)}>
+                  <button className="link-btn" onClick={() => openPrefs()}>
                     Open Preferences
                   </button>{" "}
                   to choose where .pro files are saved.
@@ -928,7 +1117,7 @@ export default function App() {
           {!hasOutputDir && (
             <p className="no-output-warning">
               ⚠️ No output folder set.{" "}
-              <button className="link-btn" onClick={() => setShowPrefs(true)}>
+              <button className="link-btn" onClick={() => openPrefs()}>
                 Open Preferences
               </button>{" "}
               to choose where .pro files are saved.
@@ -937,7 +1126,7 @@ export default function App() {
           <div className="action-row">
             <button
               className={`generate-btn${!canGenerate ? " disabled" : ""}`}
-              onClick={mode === "file" ? generateFromFile : generateFromUrl}
+              onClick={mode === "file" ? generateFromFile : mode === "pco" ? generateFromPco : generateFromUrl}
               disabled={!canGenerate}
               title={!hasOutputDir ? "Set an output folder in Preferences first" : undefined}
             >

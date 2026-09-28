@@ -16,6 +16,24 @@ This is a work in progress, so there may be some reflowing that needs to be done
 
 ---
 
+## Planning Center
+
+The **Planning Center** tab pulls chord charts straight from Planning Center Services, so the charts you already maintain there (ChordPro, e.g. `[G]Amazing [C]grace`) become ProPresenter slides without re-typing.
+
+1. **Connect once:** create a Personal Access Token at `api.planningcenteronline.com/oauth/applications`, then paste the Application ID and Secret into **Preferences → Planning Center** and click **Test connection**. ChordPresenter only reads songs and plans. The token is stored in `~/.config/chordpresenter/config.json` (readable only by you).
+2. **Find a song:** search your song library, or pick **Upcoming plans** to see what's scheduled. Songs picked from a plan default to the key they're scheduled in.
+3. **Edit the slides** before exporting:
+   - **Lines per slide:** 1–4 for the whole song, or per section from the dropdown next to each section in the preview.
+   - **Fine-tune by hand** in the chart text: a blank line starts a new slide, `[Verse 1]` starts a section, and `[G]` puts a chord on the syllable right after it.
+   - **Order** is prefilled from the arrangement's sequence in Planning Center and becomes the ProPresenter arrangement, so a Chorus played three times is one group used three times.
+4. **Key / Capo / Lyrics Only / Print** work the same as for the other tabs.
+
+### How chords line up in ProPresenter
+
+ProPresenter anchors each chord to a *character* of the slide's text, not to a column. ChordPresenter always works in those character positions: ChordPro charts already give them exactly, and chords-over-lyrics charts are converted by lining up columns (keeping the chord line's leading spaces) and then moving each chord with its word when extra spaces are removed. The editor preview shows chords over the same characters the stage display will use.
+
+---
+
 ## Supported Sites
 
 | Site | Output |
@@ -63,6 +81,11 @@ The `.pro` generation pipeline:
 | `md_to_pro.py` | Parses `.md` chord charts → ProPresenter `.pro` binary |
 | `ew_fetch.py` | Fetches URLs, dispatches site-specific parser, calls md_to_pro |
 | `create_pro_song.py` | Low-level protobuf builder (RTF + chord attributes) |
+| `pco.py` | Reads songs, arrangements (chord charts) and plans from Planning Center Services |
+| `song_to_pro.py` | Builds a `.pro` from the slide editor's JSON (Planning Center tab) |
+| `parse_pro.py` | Reads an existing `.pro` back into slides (Edit .pro tab) |
+
+Tests (no dependencies): `python3 -m unittest discover -s scripts/tests`
 
 ---
 
@@ -70,4 +93,5 @@ The `.pro` generation pipeline:
 
 - **Windows support**: Handle cross-platform temp paths and Python command name
 - **Paste mode**: Paste raw lyrics/chord text directly without a URL or file
+- **Upload to Planning Center**: Attach the finished `.pro` back to the song's arrangement
 - **Additional site parsers**: Genius and AllChristianSongsLyrics need further testing

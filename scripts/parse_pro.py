@@ -9,7 +9,7 @@ Outputs JSON to stdout:
     {
       "index": 0,
       "group": "Verse 1",                             // real group/section name
-      "lines": ["LYRIC LINE ONE", "LYRIC LINE TWO"],   // 1 or 2 lyric lines per slide
+      "lines": ["LYRIC LINE ONE", "LYRIC LINE TWO"],   // 1+ lyric lines per slide
       "chords": "F   Bb   C"                           // existing stage-display chords, if any
     },
     ...
@@ -401,7 +401,7 @@ def _slide_lyric_lines(slide_blob: bytes) -> list[str]:
     for block in rtf_blocks:
         block_lines = _filter_lines(_extract_rtf_text(block))
         lines.extend(l for l in block_lines if 0 < len(l) < 200)
-    return lines[:2]
+    return lines
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -455,7 +455,9 @@ def parse_pro_file(path: str) -> dict:
     arrangement_order = _parse_arrangement_order(top)
     by_uuid = {gu: (name, slides) for gu, name, slides in groups}
     if arrangement_order and all(gu in by_uuid for gu in arrangement_order):
-        ordered_groups = [(gu, *by_uuid[gu]) for gu in arrangement_order]
+        # An arrangement can play a group more than once (Chorus after every
+        # verse) — list its slides once so they aren't duplicated on re-export.
+        ordered_groups = [(gu, *by_uuid[gu]) for gu in dict.fromkeys(arrangement_order)]
     else:
         ordered_groups = groups
 

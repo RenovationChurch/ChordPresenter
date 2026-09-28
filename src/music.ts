@@ -100,6 +100,12 @@ function splitToken(tok: string): [string, string, string] {
   return m ? [m[1], m[2], m[3]] : ["", tok, ""];
 }
 
+/** True for a single chord name: "G", "F#m7", "D/F#", "(Asus)", "N.C." */
+export function isChordName(tok: string): boolean {
+  const [, core] = splitToken(tok.trim());
+  return CHORD_PARTS.test(core) || /^N\.?C\.?$/i.test(core);
+}
+
 export function isChordLine(line: string): boolean {
   const tokens = line.trim().split(/\s+/).filter(Boolean);
   let chords = 0;

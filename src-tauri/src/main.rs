@@ -65,7 +65,14 @@ fn clear_log(app: tauri::AppHandle) -> Result<(), String> {
 
 #[derive(serde::Serialize, serde::Deserialize, Default, Clone)]
 struct Config {
+    #[serde(default)]
     output_dir: String,
+    // Planning Center Personal Access Token. `default` lets config files
+    // written by older versions (output_dir only) still load.
+    #[serde(default)]
+    pco_app_id: String,
+    #[serde(default)]
+    pco_secret: String,
 }
 
 fn config_path() -> PathBuf {
@@ -92,12 +99,28 @@ fn get_config() -> Config {
 }
 
 #[tauri::command]
-fn save_config(output_dir: String) -> Result<(), String> {
-    let config = Config { output_dir };
+fn save_config(
+    output_dir: String,
+    pco_app_id: Option<String>,
+    pco_secret: Option<String>,
+) -> Result<(), String> {
+    // Fields the caller leaves out keep their saved value.
+    let saved = load_config();
+    let config = Config {
+        output_dir,
+        pco_app_id: pco_app_id.map(|s| s.trim().to_string()).unwrap_or(saved.pco_app_id),
+        pco_secret: pco_secret.map(|s| s.trim().to_string()).unwrap_or(saved.pco_secret),
+    };
     let path = config_path();
     std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
     let text = serde_json::to_string_pretty(&config).map_err(|e| e.to_string())?;
     std::fs::write(&path, text).map_err(|e| e.to_string())?;
+    // The file holds the Planning Center secret: readable by this user only.
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600));
+    }
     Ok(())
 }
 
@@ -305,6 +328,63 @@ fn open_print_view(app: tauri::AppHandle, title: String, html: String) -> Result
     Ok(())
 }
 
+/// Planning Center Services reader (scripts/pco.py). Credentials are read by
+/// the script from the config file, so they never appear in the command line
+/// (which is written to the log).
+#[tauri::command]
+fn pco(
+    app: tauri::AppHandle,
+    command: String,
+    query: Option<String>,
+    song: Option<String>,
+    service_type: Option<String>,
+    plan: Option<String>,
+) -> Result<String, String> {
+    const COMMANDS: [&str; 6] = ["test", "songs", "arrangements", "service-types", "plans", "plan-songs"];
+    if !COMMANDS.contains(&command.as_str()) {
+        return Err(format!("Unknown Planning Center command: {}", command));
+    }
+    let script = script_path(&app, "pco.py")?;
+    let mut cmd = Command::new("python3");
+    cmd.arg(&script).arg(&command);
+    for (flag, value) in [("--query", query), ("--song", song),
+                          ("--service-type", service_type), ("--plan", plan)] {
+        if let Some(v) = value {
+            cmd.arg(flag).arg(v);
+        }
+    }
+    run_python(&app, cmd, "pco").map(|s| s.trim().to_string())
+}
+
+/// Build a .pro from the slide editor's JSON (scripts/song_to_pro.py).
+#[tauri::command]
+fn generate_from_song(
+    app: tauri::AppHandle,
+    song_json: String,
+    output_dir: String,
+) -> Result<String, String> {
+    if output_dir.trim().is_empty() {
+        return Err("No output folder set — open Preferences.".into());
+    }
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let tmp_path = std::env::temp_dir().join(format!("chordpresenter_song_{}.json", ts));
+    std::fs::write(&tmp_path, &song_json)
+        .map_err(|e| format!("Could not write temp file: {}", e))?;
+
+    let script = script_path(&app, "song_to_pro.py")?;
+    let mut cmd = Command::new("python3");
+    cmd.arg(&script)
+        .arg("--song-json").arg(&tmp_path)
+        .arg("--out").arg(output_dir.trim());
+    let result = run_python(&app, cmd, "generate_from_song");
+    let _ = std::fs::remove_file(&tmp_path);
+    result
+}
+
 #[tauri::command]
 fn parse_pro(app: tauri::AppHandle, pro_path: String) -> Result<String, String> {
     let p = std::path::Path::new(&pro_path);
@@ -391,6 +471,8 @@ fn main() {
             fetch_ew_preview,
             generate_from_url,
             parse_pro,
+            pco,
+            generate_from_song,
             open_print_view,
             get_config,
             save_config,

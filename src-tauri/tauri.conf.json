@@ -43,7 +43,9 @@
         "../scripts/md_to_pro.py",
         "../scripts/ew_fetch.py",
         "../scripts/create_pro_song.py",
-        "../scripts/parse_pro.py"
+        "../scripts/parse_pro.py",
+        "../scripts/pco.py",
+        "../scripts/song_to_pro.py"
       ],
       "icon": [
         "icons/32x32.png",
