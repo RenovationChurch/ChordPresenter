@@ -1,7 +1,8 @@
 import { useMemo, useState } from "react";
+import ArrangementEditor from "./ArrangementEditor";
 import {
   ChordAt, EditorSection, RenderOpts, SlideStyle, TextCase, WRAP_WARN_CHARS, applyCase, editReflow,
-  parseEditorText, rechunk, renderSection, resolveArrangement, serializeEditor, toReflow,
+  parseEditorText, rechunk, renderSection, serializeEditor, toReflow,
 } from "./chordpro";
 
 const LINE_CHOICES = [1, 2, 3, 4];
@@ -25,11 +26,11 @@ function PreviewLine({ text, chords, showChordRow, textCase }: {
   const instrumental = !text.trim();
   const long = !instrumental && text.length > WRAP_WARN_CHARS;
   return (
-    <div className={`pv-line${long ? " pv-line--long" : ""}${instrumental ? " pv-line--inst" : ""}`}
+    <div className={`pv-line${long ? " pv-line--long" : ""}${instrumental ? " pv-line--inst" : ""}${showChordRow ? " pv-line--chords" : ""}`}
          title={long ? `${text.length} characters — may wrap on screen` : undefined}>
       {segs.map((s, i) => (
         <span className="pv-seg" key={i}>
-          {showChordRow && <span className="pv-chord">{s.chord ?? ""}</span>}
+          {showChordRow && s.chord && <span className="pv-chord">{s.chord}</span>}
           <span className="pv-text">{s.text || " "}</span>
         </span>
       ))}
@@ -58,8 +59,6 @@ export default function SlideEditor({
   const reflow = useMemo(() => toReflow(text).plain, [text]);
   const rendered = useMemo(() => sections.map(s => renderSection(s, render)), [sections, render]);
   const slideCount = rendered.reduce((n, s) => n + s.length, 0);
-  const unknown = useMemo(() => resolveArrangement(
-    arrangement.split(",").filter(s => s.trim()), sections).unknown, [arrangement, sections]);
 
   const rewrite = (fn: (s: EditorSection, i: number) => EditorSection) =>
     onChange(serializeEditor(sections.map(fn)));
@@ -108,15 +107,7 @@ export default function SlideEditor({
             <textarea className="chart-textarea se-textarea" value={text} spellCheck={false}
                       onChange={e => onChange(e.target.value)} />
           )}
-          <div className="se-arrangement">
-            <label className="field-label">Order</label>
-            <input className="url-input" value={arrangement}
-                   placeholder="As written — or e.g. Verse 1, Chorus, Verse 2, Chorus, Bridge, Chorus"
-                   onChange={e => onArrangementChange(e.target.value)} />
-          </div>
-          {unknown.length > 0 && (
-            <span className="se-warn">No section named: {unknown.join(", ")}</span>
-          )}
+          <ArrangementEditor sections={sections} order={arrangement} onChange={onArrangementChange} />
         </div>
 
         <div className="se-preview-pane">

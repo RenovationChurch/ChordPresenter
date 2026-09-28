@@ -76,6 +76,10 @@ DEFAULT_STYLE = {
     'font_size': 253,                     # points, on a 1920x1080 slide
     'line_bars': True,                    # black bar behind each line of text
     'shrink_to_fit': False,               # let ProPresenter shrink text that overflows
+    # ALL CAPS on the main (audience) output only: ProPresenter's display-time
+    # capitalization, so the text itself -- what the stage display shows --
+    # keeps the case chosen by `case`. None = follow `case` ('upper' -> on).
+    'audience_caps': None,
 }
 _TEMPLATE_FONT_SIZE = 253
 
@@ -85,6 +89,8 @@ def _style(style=None):
     st['font_size'] = max(8.0, min(400.0, float(st['font_size'])))
     st['line_bars'] = bool(st['line_bars'])
     st['shrink_to_fit'] = bool(st['shrink_to_fit'])
+    if st['audience_caps'] is not None:
+        st['audience_caps'] = bool(st['audience_caps'])
     # Font names go into RTF and protobuf strings -- keep them to safe characters.
     for key in ('font_name', 'font_family'):
         st[key] = re.sub(r'[^A-Za-z0-9 ._-]', '', str(st[key])) or DEFAULT_STYLE[key]
@@ -223,11 +229,14 @@ LYRIC_TEMPLATE = bytes.fromhex(_TEMPLATE_HEX.replace(' ', '').replace('\n', ''))
 assert len(LYRIC_TEMPLATE) == 1212, f'Template size={len(LYRIC_TEMPLATE)}, expected 1212'
 
 
-def _build_chord_attr_bytes(chord_positions):
+def _build_chord_attr_bytes(chord_positions, text_len=0):
     """
     Encode chord CustomAttribute protobuf entries for Text.Attributes (field 13).
 
     chord_positions : dict {char_pos: chord_name}  (from _map_chord_positions)
+    text_len        : length of the slide text -- the last chord's range runs
+                      to the end of it, like chords written by ProPresenter
+                      and Pro7ChordEditor (each range ends where the next begins).
     Returns bytes to append inside the Attributes message.
 
     Structure per chord:
@@ -244,7 +253,7 @@ def _build_chord_attr_bytes(chord_positions):
     items = sorted(chord_positions.items())
     result = b''
     for i, (start_pos, chord_name) in enumerate(items):
-        end_pos = items[i + 1][0] if i + 1 < len(items) else start_pos + len(chord_name)
+        end_pos = items[i + 1][0] if i + 1 < len(items) else max(text_len, start_pos + 1)
         int_range = (encode_varint((1 << 3) | 0) + encode_varint(start_pos) +
                      encode_varint((2 << 3) | 0) + encode_varint(end_pos))
         ca = encode_lv(1, int_range) + encode_lv(7, chord_name.encode('utf-8'))
@@ -344,27 +353,57 @@ def _build_attributes(text_len, case, chord_positions, st):
     """Text.Attributes for one slide: the template's base style with the
     chosen font, and per-character rules that cover the whole text.
 
-    ALL CAPS ('upper') sets capitalization on the whole text; the other modes
-    leave it off so the lyrics keep the case they were written in (a theme's
-    own All Caps can still apply to the audience output)."""
+    The capitalization rule is ProPresenter's display-time ALL CAPS: it
+    changes how the text is drawn, not the text itself. It's on when
+    st['audience_caps'] says so (default: when the text is ALL CAPS anyway),
+    so lyrics can be stored as written for the stage display and still be
+    capitals on the main output."""
+    caps = (case == 'upper') if st['audience_caps'] is None else st['audience_caps']
     whole = encode_lv(1, _varint_field(2, text_len))           # IntRange 0..len
     out = b''
     for f, raw in _iter_fields(_get(LYRIC_TEMPLATE, TEXT + [3])):
         if f == 1:
             out += encode_lv(1, _font(st))                     # font
-        elif f == 13 or (f == 2 and case != 'upper'):
+        elif f == 13 or (f == 2 and not caps):
             continue                                           # per-character rules / caps
         else:
             out += raw
-    if case == 'upper':
+    if caps:
         out += encode_lv(13, whole + _varint_field(2, 1))     # capitalization = ALL CAPS
     out += encode_lv(13, whole + encode_lv(12, _font(st)))    # original_font
-    return out + _build_chord_attr_bytes(chord_positions or {})
+    return out + _build_chord_attr_bytes(chord_positions or {}, text_len)
+
+
+SLIDE_SIZE = (1920.0, 1080.0)
+
+
+def _template_box_size():
+    """(width, height) of the template's text box (Element.bounds.size)."""
+    size = _get(LYRIC_TEMPLATE, ELEMENT + [3, 2])
+    w = h = 0.0
+    for f, raw in _iter_fields(size):
+        value = struct.unpack('<d', raw[1:9])[0]
+        if f == 1:
+            w = value
+        elif f == 2:
+            h = value
+    return w, h
+
+
+def _centered_bounds():
+    """Graphics.Rect for the text box, centered on the slide. (The template's
+    box sat high: y 54-840 on a 1080-high slide.)"""
+    w, h = _template_box_size()
+    origin = _double_field(1, (SLIDE_SIZE[0] - w) / 2) + _double_field(2, (SLIDE_SIZE[1] - h) / 2)
+    size = _double_field(1, w) + _double_field(2, h)
+    return encode_lv(1, origin) + encode_lv(2, size)
 
 
 def _style_element(element, st):
-    """The text box: a black bar behind each line (Element.text_line_mask,
-    painted with the box's fill) -- or no bars and no fill at all."""
+    """The text box: centered on the slide, with a black bar behind each line
+    (Element.text_line_mask, painted with the box's fill) -- or no bars and
+    no fill at all."""
+    element = _set_field(element, 3, encode_lv(3, _centered_bounds()))
     if not st['line_bars']:
         return _set_field(_set_field(element, 14, None), 9, None)
     r = st['font_size'] / _TEMPLATE_FONT_SIZE
@@ -513,16 +552,41 @@ _MUSIC_KEYS = ['Ab', 'A', 'A#', 'Bb', 'B', 'B#', 'Cb', 'C', 'C#', 'Db', 'D',
                'D#', 'Eb', 'E', 'E#', 'Fb', 'F', 'F#', 'Gb', 'G', 'G#']
 
 
-def build_music(key):
-    """Presentation.Music: the key the chords are written in, as both the
-    original and the current key, so ProPresenter can transpose from it.
-    Returns b'' for a key it can't name."""
+def _key_scale(key):
+    """rv.data.MusicKeyScale for a key name ("G", "F#m"), or b'' if unknown."""
     m = re.match(r'^([A-G][#b]?)(m(?!aj))?', (key or '').strip())
     if not m or m.group(1) not in _MUSIC_KEYS:
         return b''
-    scale = (_varint_field(1, _MUSIC_KEYS.index(m.group(1)))       # MusicKeyScale.music_key
-             + _varint_field(2, 1 if m.group(2) else 0))           # .music_scale: major / minor
-    return encode_lv(3, scale) + encode_lv(4, scale)               # Music.original / Music.user
+    return (_varint_field(1, _MUSIC_KEYS.index(m.group(1)))     # music_key
+            + _varint_field(2, 1 if m.group(2) else 0))         # music_scale: major / minor
+
+
+def build_music(original, user=None):
+    """Presentation.Music: the key the chords are written in (original) and
+    the key ProPresenter should show them in (user; defaults to the same).
+    When they differ, ProPresenter transposes the chords itself.
+    Returns b'' for a key it can't name."""
+    orig = _key_scale(original)
+    if not orig:
+        return b''
+    return encode_lv(3, orig) + encode_lv(4, _key_scale(user) or orig)   # Music.original / .user
+
+
+def read_music(presentation):
+    """(original, user) key names from a .pro file's bytes (None if unset)."""
+    names = {}
+    for f, raw in _iter_fields(presentation):
+        if f != 23:
+            continue
+        for sf, sraw in _iter_fields(_payload(raw)):
+            if sf in (3, 4):
+                key, scale = 0, 0
+                for kf, kraw in _iter_fields(_payload(sraw)):
+                    value, _ = decode_varint(kraw, 1)
+                    key, scale = (value, scale) if kf == 1 else (key, value)
+                if key < len(_MUSIC_KEYS):
+                    names[sf] = _MUSIC_KEYS[key] + ('m' if scale == 1 else '')
+    return names.get(3), names.get(4)
 
 
 def build_pro_file(title, sections, arrangement_name="DoubleThickTheme", chord_data=None,

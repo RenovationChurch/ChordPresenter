@@ -167,6 +167,35 @@ class SlideStyle(unittest.TestCase):
         self.assertIn(b'\\fcharset0 Evilrtf;}', blob)
 
 
+class AudienceCaps(unittest.TestCase):
+    """Text stored as written (what the stage display shows) with ALL CAPS
+    applied only as ProPresenter's display-time capitalization."""
+
+    LINES = ('He has done great things',)
+
+    def test_as_written_text_with_caps_on_output(self):
+        blob, _ = build_slide(*self.LINES, case='asis', style={'audience_caps': True})
+        self.assertIn(b'He has done great things', blob)          # stored as written
+        self.assertIn((2, 24, 1), text_rules(blob))               # displayed ALL CAPS
+
+    def test_caps_off_on_output_even_for_all_caps_text(self):
+        blob, _ = build_slide(*self.LINES, case='upper', style={'audience_caps': False})
+        self.assertIn(b'HE HAS DONE GREAT THINGS', blob)
+        self.assertNotIn(2, [kind for kind, _, _ in text_rules(blob)])
+
+
+class CenteredTextBox(unittest.TestCase):
+    def test_box_is_centered_on_the_slide(self):
+        import struct
+        from create_pro_song import ELEMENT, _get, _template_box_size
+        blob, _ = build_slide('Great things')
+        origin = _get(blob, ELEMENT + [3, 1])
+        x, y = (struct.unpack('<d', v)[0] for _, _, v in _fields(origin))
+        w, h = _template_box_size()
+        self.assertAlmostEqual(x + w / 2, 960)
+        self.assertAlmostEqual(y + h / 2, 540)
+
+
 class SongKey(unittest.TestCase):
     def test_key_written_as_original_and_user_key(self):
         from create_pro_song import build_music
@@ -183,6 +212,33 @@ class SongKey(unittest.TestCase):
         finally:
             os.unlink(path)
         self.assertEqual(top[23], [b'\x1a\x04\x08\x13\x10\x00\x22\x04\x08\x13\x10\x00'])  # G = 19
+
+
+    def test_change_the_key_propresenter_shows(self):
+        import pro_key
+        from create_pro_song import read_music
+        path = build(chord_key='G')
+        try:
+            before = open(path, 'rb').read()
+            self.assertEqual(read_music(before), ('G', 'G'))
+            self.assertEqual(pro_key.set_key(path, 'Bb'), {'original': 'G', 'user': 'Bb'})
+            after = open(path, 'rb').read()
+            # Only the key changed: everything before it is byte-identical.
+            self.assertEqual(before[:before.index(b'\xba\x01')], after[:after.index(b'\xba\x01')])
+            self.assertEqual(read_music(after), ('G', 'Bb'))
+            self.assertEqual(parse_pro_file(path)['slides'][0]['lines'], ['COME, LET US WORSHIP OUR KING'])
+        finally:
+            os.unlink(path)
+
+    def test_file_without_a_key_needs_the_original(self):
+        import pro_key
+        path = build()
+        try:
+            with self.assertRaises(ValueError):
+                pro_key.set_key(path, 'A')
+            self.assertEqual(pro_key.set_key(path, 'A', original='G'), {'original': 'G', 'user': 'A'})
+        finally:
+            os.unlink(path)
 
 
 class FileName(unittest.TestCase):

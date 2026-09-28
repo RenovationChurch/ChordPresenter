@@ -28,10 +28,14 @@ slide's own embedded RTF block.
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 import json
 import struct
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from create_pro_song import read_music  # noqa: E402
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -490,7 +494,9 @@ def parse_pro_file(path: str, opening_name: str = 'Opening', opening_count: int 
                 "chords": chords,
             })
 
-    return {"title": title, "slides": slides}
+    # The key the chords are written in, and the key ProPresenter shows them in.
+    original, user = read_music(data)
+    return {"title": title, "slides": slides, "key": {"original": original, "user": user}}
 
 
 # ══════════════════════════════════════════════════════════════════════════════

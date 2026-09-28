@@ -103,6 +103,10 @@ struct Config {
     // Let ProPresenter shrink text that doesn't fit the box.
     #[serde(default = "default_true")]
     shrink_to_fit: bool,
+    // ALL CAPS on the main (audience) output only, whatever case the text
+    // itself is in (the stage display shows the text as stored).
+    #[serde(default = "default_true")]
+    audience_caps: bool,
     // Export dialog: add " - Key" to the suggested file name.
     #[serde(default = "default_true")]
     filename_include_key: bool,
@@ -113,7 +117,7 @@ fn default_opening_name() -> String { "Opening".into() }
 fn default_opening_count() -> u32 { 2 }
 fn default_text_case() -> String { "upper".into() }
 fn default_rhythm_marks() -> String { "instrumental".into() }
-fn default_chord_notes() -> String { "beside".into() }
+fn default_chord_notes() -> String { "slide".into() }
 fn default_font_name() -> String { "HelveticaNeue-Bold".into() }
 fn default_font_family() -> String { "Helvetica Neue".into() }
 fn default_font_size() -> f64 { 90.0 }
@@ -149,6 +153,7 @@ impl Config {
             "font_size": self.font_size,
             "line_bars": self.line_bars,
             "shrink_to_fit": self.shrink_to_fit,
+            "audience_caps": self.audience_caps,
         })
         .to_string()
     }
@@ -299,6 +304,32 @@ fn run_conversion(
     load_config().slide_args(&mut cmd, true);
 
     run_python(&app, cmd, "run_conversion")
+}
+
+/// Read — or, with `user_key`, change — the key stored in a .pro file
+/// (scripts/pro_key.py). ProPresenter transposes the stage chords when the
+/// "user" key differs from the "original" key the chords are written in.
+#[tauri::command]
+fn pro_key(
+    app: tauri::AppHandle,
+    pro_path: String,
+    user_key: Option<String>,
+    original_key: Option<String>,
+) -> Result<String, String> {
+    let p = std::path::Path::new(&pro_path);
+    if !p.is_absolute() || p.extension().and_then(|e| e.to_str()) != Some("pro") {
+        return Err("Expected the full path of a .pro file".into());
+    }
+    let canonical = p.canonicalize().map_err(|e| format!("Invalid path: {}", e))?;
+    let script = script_path(&app, "pro_key.py")?;
+    let mut cmd = Command::new("python3");
+    cmd.arg(&script).arg(canonical.to_string_lossy().to_string());
+    for (flag, value) in [("--user", user_key), ("--original", original_key)] {
+        if let Some(v) = value.filter(|v| !v.trim().is_empty()) {
+            cmd.arg(flag).arg(v.trim());
+        }
+    }
+    run_python(&app, cmd, "pro_key").map(|s| s.trim().to_string())
 }
 
 /// For the export dialog's "replace existing file?" warning.
@@ -556,6 +587,7 @@ fn main() {
             pco,
             generate_from_song,
             path_exists,
+            pro_key,
             open_print_view,
             get_config,
             save_config,

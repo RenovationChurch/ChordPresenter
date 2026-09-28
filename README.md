@@ -36,7 +36,8 @@ Every song — from a File, a URL, or Planning Center — opens in the same edit
   - `<i>(dropout)</i>` is a performance note — inside a chord, on a lyric line, or after a section heading
   - `[Verse 1]` or `VERSE 1` starts a section
 - **Lines per slide:** 1–4 for the whole song, or per section from the dropdown in the preview. The first split respects the stanza breaks (blank lines) in the chart.
-- **Order** becomes the ProPresenter arrangement. It's prefilled from Planning Center's sequence, or from the chart itself when it repeats a section — a Chorus written out three times becomes one group played three times (a repeat with different notes or words is kept as "Chorus (2)").
+- **Order** becomes the ProPresenter arrangement. Drag the section chips to reorder, × to remove, and click a section underneath to add it — as many times as it's played. A repeated section is one ProPresenter group used several times, so its slides exist once and an edit applies everywhere; the ×N badge shows how often each is played, and "not played" flags a section left out. The order is prefilled from Planning Center's sequence, or from the chart itself when it writes a section out more than once (a repeat with different notes or words is kept as its own section, e.g. "Chorus (2)"). "Reset to as written" plays every section once, top to bottom.
+- **Lead-in chords:** `[G]    Amazing grace` — spaces after a chord at the start of a line are kept, so the chord sits ahead of the first word.
 
 ## Exporting
 
@@ -44,7 +45,11 @@ Every song — from a File, a URL, or Planning Center — opens in the same edit
 
 ## Changing the key in ProPresenter
 
-Each exported file records the key its chords are written in (ProPresenter's "original key" — after any capo). In ProPresenter, set the key on the song in your playlist; ProPresenter uses the original key to transpose the chords on the stage display. You can also re-export from ChordPresenter in another key at any time.
+A .pro file stores two keys: the **original** key its chords are written in, and the key ProPresenter should **show** them in. When they differ, ProPresenter transposes the stage-display chords itself. ProPresenter only offers a key picker for MultiTracks songs, so ChordPresenter sets it for you:
+
+- Every export records its key as both.
+- To change it later, open the file in the **Edit .pro** tab, pick the key under "ProPresenter shows", and click **Save key to file**. Only the key changes — lyrics and chords are untouched. Reopen the song in ProPresenter.
+- Or re-export from ChordPresenter in the new key.
 
 ## Slide settings (Preferences → Slides)
 
@@ -54,9 +59,12 @@ Each exported file records the key its chords are written in (ProPresenter's "or
 | Shrink lines that don't fit | On (default): ProPresenter scales the font down for long lines instead of overflowing |
 | Black bar behind each line | On (default) / off. The bars scale with the font size |
 | Blank slides at the start | On/off, how many, and the group's name (default: 2 slides named "Opening") |
-| Lyric capitalization | ALL CAPS (default) · As written · First letter of each line |
-| Bar lines and beat slashes | Only on instrumental lines (default) · Everywhere · Hide |
-| Performance notes | Next to the chord, e.g. `B (dropout)` (default) · In the slide notes · Hide |
+| Lyric text (stage display) | ALL CAPS (default) · As written · First letter of each line — how the lyrics are saved |
+| Main output (audience) | ALL CAPS (default) · Same as the lyric text — uses ProPresenter's display-only capitalization, so the text itself keeps its case |
+| Bar lines and beat slashes | Only on instrumental lines (default) · Also on lyric lines where there's no chord (`[\|]`) · Hide |
+| Performance notes | In the slide notes (default) · Next to the chord, e.g. `B (dropout)` · Hide |
+
+Each chord label is always just the chord name, never combined with a bar line or beat mark, so ProPresenter can transpose it and show it as a number or numeral on the stage display. A note placed "next to the chord" does make that one chord unreadable to ProPresenter. The lyric box is centered on the slide.
 
 The computer that runs ProPresenter needs the font installed too, or it will substitute another one. "As written" keeps normal case on the stage display; turn on All Caps in your ProPresenter theme to still show capitals to the audience. Slide notes only appear on stage layouts that include a Slide Notes object. Notes on section headings are left off unless "slide notes" is chosen.
 

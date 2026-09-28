@@ -131,6 +131,8 @@ interface AppConfig {
   line_bars: boolean;
   /** Let ProPresenter shrink text that overflows the box. */
   shrink_to_fit: boolean;
+  /** ALL CAPS on the main (audience) output, whatever case the text is in. */
+  audience_caps: boolean;
   /** Export dialog: suggest a file name ending in " - Key". */
   filename_include_key: boolean;
 }
@@ -139,9 +141,9 @@ interface AppConfig {
 const EMPTY_CONFIG: AppConfig = {
   output_dir: "", pco_app_id: "", pco_secret: "",
   opening_enabled: true, opening_name: "Opening", opening_count: 2,
-  text_case: "upper", rhythm_marks: "instrumental", chord_notes: "beside",
+  text_case: "upper", rhythm_marks: "instrumental", chord_notes: "slide",
   font_name: "HelveticaNeue-Bold", font_family: "Helvetica Neue", font_size: 90,
-  line_bars: true, shrink_to_fit: true, filename_include_key: true,
+  line_bars: true, shrink_to_fit: true, audience_caps: true, filename_include_key: true,
 };
 
 /** Fonts that come with macOS (plus Tungsten, the original template's font).
@@ -175,7 +177,7 @@ function fontInstalled(family: string): boolean {
 
 const styleOf = (c: AppConfig): SlideStyle => ({
   font_name: c.font_name, font_family: c.font_family, font_size: c.font_size,
-  line_bars: c.line_bars, shrink_to_fit: c.shrink_to_fit,
+  line_bars: c.line_bars, shrink_to_fit: c.shrink_to_fit, audience_caps: c.audience_caps,
 });
 
 /** A song loaded into the slide editor, from any source. */
@@ -388,16 +390,23 @@ function PreferencesPanel({
             </div>
 
             <div className="prefs-row">
-              <span className="prefs-label">Lyric capitalization</span>
+              <span className="prefs-label">Lyric text — stage display</span>
               <select className="key-select prefs-select" value={local.text_case}
                       onChange={e => set("text_case", e.target.value as TextCase)}>
                 <option value="upper">ALL CAPS</option>
                 <option value="asis">As written</option>
                 <option value="line">Capitalize the first letter of each line</option>
               </select>
+              <span className="prefs-label">Main output — audience</span>
+              <select className="key-select prefs-select" value={local.audience_caps ? "caps" : "same"}
+                      onChange={e => set("audience_caps", e.target.value === "caps")}>
+                <option value="caps">ALL CAPS</option>
+                <option value="same">Same as the lyric text</option>
+              </select>
               <div className="prefs-hint">
-                "As written" keeps normal case on the stage display — turn on your ProPresenter
-                theme's All Caps to still show capitals to the audience.
+                The lyrics are saved the way the first setting says, and the stage display shows
+                them that way. "ALL CAPS" on the main output uses ProPresenter's own capitalization,
+                so the audience sees capitals without changing the text.
               </div>
             </div>
 
@@ -406,17 +415,21 @@ function PreferencesPanel({
               <select className="key-select prefs-select" value={local.rhythm_marks}
                       onChange={e => set("rhythm_marks", e.target.value as RhythmMode)}>
                 <option value="instrumental">Only on instrumental lines (intro, turnaround…)</option>
-                <option value="all">Everywhere</option>
+                <option value="all">Also on lyric lines, where there's no chord ([|], [| / /])</option>
                 <option value="none">Hide — chord names only</option>
               </select>
+              <div className="prefs-hint">
+                A chord's label is always just its name, so ProPresenter can transpose it and show
+                it as a number or numeral on the stage display.
+              </div>
             </div>
 
             <div className="prefs-row">
               <span className="prefs-label">Performance notes — <i>(italic)</i> text in charts</span>
               <select className="key-select prefs-select" value={local.chord_notes}
                       onChange={e => set("chord_notes", e.target.value as NotesMode)}>
-                <option value="beside">Next to the chord — "B (dropout)"</option>
                 <option value="slide">In the slide notes (stage display only)</option>
+                <option value="beside">Next to the chord — "B (dropout)" (that chord won't show as a number)</option>
                 <option value="hide">Hide</option>
               </select>
               <div className="prefs-hint">
@@ -553,6 +566,10 @@ export default function App() {
   const [proTitle, setProTitle]   = useState("");
   const [proSlides, setProSlides] = useState<ProSlide[]>([]);
   const [proLoading, setProLoading] = useState(false);
+  // Key stored in the .pro: what its chords are written in, and what
+  // ProPresenter shows them in (it transposes when they differ).
+  const [proKey, setProKey] = useState<{ original: string; user: string; saved: string }>(
+    { original: "", user: "", saved: "" });
 
   // ── Planning Center mode state ─────────────────────────────────
   const pcoConnected = Boolean(config.pco_app_id && config.pco_secret);
@@ -630,6 +647,9 @@ export default function App() {
       setProTitle(
         data.title || path.split("/").pop()?.replace(/\.pro$/, "") || ""
       );
+      const original = canonicalKey(data.key?.original || "");
+      const user = canonicalKey(data.key?.user || "") || original;
+      setProKey({ original, user, saved: `${original}|${user}` });
       // group + chords come straight from parse_pro.py — chords are
       // pre-filled from whatever's already embedded on the source .pro so
       // untouched slides keep their existing chords instead of losing them
@@ -692,7 +712,7 @@ export default function App() {
   }, [resetKeys]);
 
   const clearPro = useCallback(() => {
-    setProPath(""); setProTitle(""); setProSlides([]);
+    setProPath(""); setProTitle(""); setProSlides([]); setProKey({ original: "", user: "", saved: "" });
     setStatus("idle"); setMessage("");
   }, []);
 
@@ -718,6 +738,25 @@ export default function App() {
     setOutputMode("both");
     if (!info.chartKey) setMessage("No chords found — this will export as lyrics only.");
   }, [openInEditor, applyKeyInfo]);
+
+  // ── Pro edit mode: change the key ProPresenter shows ───────────
+  const saveProKey = useCallback(async () => {
+    if (!proPath || !proKey.original || !proKey.user) return;
+    try {
+      const data = JSON.parse(await invoke<string>("pro_key", {
+        proPath, userKey: proKey.user, originalKey: proKey.original,
+      }));
+      if (data.error) throw new Error(data.error);
+      const original = canonicalKey(data.original), user = canonicalKey(data.user);
+      setProKey({ original, user, saved: `${original}|${user}` });
+      setStatus("ok");
+      setMessage(`Saved: ProPresenter will show the chords in ${data.user}` +
+        (data.user !== data.original ? ` (written in ${data.original})` : "") +
+        ". Reopen the song in ProPresenter to see it.");
+    } catch (err) {
+      setStatus("err"); setMessage(err instanceof Error ? err.message : String(err));
+    }
+  }, [proPath, proKey]);
 
   // ── Pro edit mode: update chords for a slide ───────────────────
   const updateSlideChords = useCallback((index: number, chords: string) => {
@@ -1093,6 +1132,31 @@ export default function App() {
           {/* Slide editor */}
           {proSlides.length > 0 && (
             <>
+              <div className="field-row pro-key-row">
+                <label className="field-label">Key</label>
+                <div className="field-body">
+                  <span className="key-hint">chords written in</span>
+                  <select className="key-select" value={proKey.original}
+                          onChange={e => setProKey(k => ({ ...k, original: e.target.value, user: k.user || e.target.value }))}
+                          title="The key the chords in this file are written in">
+                    <option value="">unknown</option>
+                    <optgroup label="Major">{MAJOR_KEYS.map(k => <option key={k} value={k}>{k}</option>)}</optgroup>
+                    <optgroup label="Minor">{MINOR_KEYS.map(k => <option key={k} value={k}>{k}</option>)}</optgroup>
+                  </select>
+                  <span className="key-hint">· ProPresenter shows</span>
+                  <select className="key-select" value={proKey.user} disabled={!proKey.original}
+                          onChange={e => setProKey(k => ({ ...k, user: e.target.value }))}
+                          title="ProPresenter transposes the stage-display chords to this key">
+                    <optgroup label="Major">{MAJOR_KEYS.map(k => <option key={k} value={k}>{k}</option>)}</optgroup>
+                    <optgroup label="Minor">{MINOR_KEYS.map(k => <option key={k} value={k}>{k}</option>)}</optgroup>
+                  </select>
+                  <button className="change-btn" onClick={saveProKey}
+                          disabled={!proKey.original || !proKey.user || `${proKey.original}|${proKey.user}` === proKey.saved}>
+                    Save key to file
+                  </button>
+                </div>
+              </div>
+
               <div className="slide-list-header">
                 <span className="slide-list-count">{proSlides.length} slides</span>
                 <span className="slide-list-hint">Type chords above each lyric line</span>

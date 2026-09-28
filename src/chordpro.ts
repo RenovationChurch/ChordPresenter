@@ -178,6 +178,17 @@ export function editText<T extends { pos: number }>(text: string, chords: T[], r
  *  names ("Oh   I'm clean" → "Oh I'm clean") and trim the ends, moving each
  *  chord with the text under it. Mirrors _collapse_spaces in md_to_pro.py. */
 export function tidySpaces<T extends { pos: number }>(text: string, chords: T[]): { text: string; chords: T[] } {
+  // "[|Ebm]      I believe": a chord followed by spaces is a lead-in played
+  // before the words start — keep that gap so it sits ahead of the lyric.
+  const lead = chords.some(c => c.pos === 0) ? (text.match(/^ +/)?.[0].length ?? 0) : 0;
+  if (lead) {
+    const rest = tidySpaces(text.slice(lead), chords.filter(c => c.pos >= lead)
+      .map(c => ({ ...c, pos: c.pos - lead })));
+    return {
+      text: " ".repeat(lead) + rest.text,
+      chords: [...chords.filter(c => c.pos < lead), ...rest.chords.map(c => ({ ...c, pos: c.pos + lead }))],
+    };
+  }
   let r = editText(text, chords, / {2,}/g, " ");
   r = editText(r.text, r.chords, /^ +/g, "");
   return { text: r.text.replace(/ +$/, ""), chords: r.chords };
@@ -569,12 +580,21 @@ export interface RenderOpts {
 
 export interface RenderedSlide { lines: { text: string; chords: ChordAt[] }[]; notes: string[] }
 
+/**
+ * The label ProPresenter gets for one chord bracket. A label with a chord
+ * name in it stays JUST the chord name (plus a note, if notes go "beside"),
+ * because ProPresenter can only transpose a chord or show it as a number /
+ * numeral when the label is a chord it can read — "|Ebm" defeats that.
+ * Bar lines and beat slashes are shown only in brackets that have no chord
+ * ("[|]", "[|  /  /]") and only when rhythm marks are on for lyric lines.
+ */
 function chordText(toks: Tok[], o: RenderOpts, showRhythm: boolean, noteSink: string[], word: string): string {
   let s = "";
   const add = (piece: string) => { s += (s && !s.endsWith("|") ? " " : "") + piece; };
+  const marks = showRhythm && !toks.some(t => t.kind === "chord");
   for (const t of toks) {
-    if (t.kind === "bar") { if (showRhythm) s += (s ? " " : "") + t.text; }
-    else if (t.kind === "beat") { if (showRhythm) add(t.text); }
+    if (t.kind === "bar") { if (marks) s += (s ? " " : "") + t.text; }
+    else if (t.kind === "beat") { if (marks) add(t.text); }
     else if (t.kind === "chord") add(transposeName(t.name, o.semitones, o.preferFlat));
     else if (o.notes === "beside") add(t.text);
     else if (o.notes === "slide") noteSink.push(word ? `${word}: ${t.text}` : t.text);
@@ -649,6 +669,8 @@ export function applyCase(text: string, mode: TextCase): string {
 export interface SlideStyle {
   font_name: string; font_family: string; font_size: number;
   line_bars: boolean; shrink_to_fit: boolean;
+  /** ALL CAPS on the main output only (display-time, text keeps its case). */
+  audience_caps: boolean;
 }
 
 export interface SongJson {

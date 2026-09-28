@@ -45,7 +45,8 @@
         "../scripts/create_pro_song.py",
         "../scripts/parse_pro.py",
         "../scripts/pco.py",
-        "../scripts/song_to_pro.py"
+        "../scripts/song_to_pro.py",
+        "../scripts/pro_key.py"
       ],
       "icon": [
         "icons/32x32.png",

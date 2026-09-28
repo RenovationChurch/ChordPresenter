@@ -46,7 +46,9 @@ test("rhythm marks: instrumental lines only (default), everywhere, or hidden", (
   const secs = load();
   // "[|B]Come, … our [|]King": the bare bar "[|]" disappears unless rhythm shows everywhere
   assert.deepEqual(chordsOn(secs, "Verse 1"), ["B@Come,"]);
-  assert.deepEqual(chordsOn(secs, "Verse 1", { rhythm: "all" }), ["|B@Come,", "|@King"]);
+  // "Everywhere": standalone marks show, but never glued to a chord name —
+  // ProPresenter can only turn a clean chord name into a number/numeral.
+  assert.deepEqual(chordsOn(secs, "Verse 1", { rhythm: "all" }), ["B@Come,", "|@King"]);
   const intro = (rhythm: cp.RhythmMode) =>
     cp.renderSection(section(secs, "Intro"), { ...OPTS, rhythm })[0].lines[0].chords.map(c => c.chord).join(" ");
   assert.equal(intro("instrumental"), "| B / / / | / / C#m7 / | G#m7 / / / | / / E /");
@@ -55,7 +57,7 @@ test("rhythm marks: instrumental lines only (default), everywhere, or hidden", (
 
 test("chords with bars and bass-only slashes transpose", () => {
   const secs = load();
-  assert.deepEqual(chordsOn(secs, "Verse 1", { semitones: 2, rhythm: "all" }), ["|C#@Come,", "|@King"]);
+  assert.deepEqual(chordsOn(secs, "Verse 1", { semitones: 2, rhythm: "all" }), ["C#@Come,", "|@King"]);
   // "[/C#]You [/D#]have done" — bass-only notes move too
   const v2 = cp.renderSection(section(secs, "Verse 2"), { ...OPTS, semitones: 2 })[1].lines[0];
   assert.deepEqual(v2.chords.map(c => c.chord), ["/D#", "/F", "F#5"]);
@@ -73,10 +75,21 @@ test("performance notes: beside the chord, in slide notes, or hidden", () => {
   assert.deepEqual(cp.renderSection(section(secs, "Chorus (2)"), { ...OPTS, notes: "hide" })[0].notes, []);
 });
 
-test("padding spaces in lyrics are tidied and chords move with their words", () => {
+test("spaces after a lead-in chord are kept; padding elsewhere is tidied", () => {
   const tag = section(load(), "Tag").slides[0].lines[0];
-  assert.equal(tag.text, "God You do great things");
-  assert.deepEqual(chordsOn(load(), "Tag"), ["F#sus@God", "E2@great"]);
+  assert.equal(tag.text, "    God You do great things");
+  assert.deepEqual(tag.chords.map(c => c.pos), [0, 15]);             // F#sus before "God", E2 on "great"
+  const line = cp.parseLine("[|Ebm]       I be[|Db]lieve in Jesus'   [|Cb]name");
+  assert.equal(line.text, "       I believe in Jesus' name");
+  assert.deepEqual(line.chords.map(c => line.text.slice(c.pos, c.pos + 4)), ["    ", "liev", "name"]);
+});
+
+test("chord labels stay readable for ProPresenter's numbers/numerals", () => {
+  const secs = cp.parseEditorText("[Chorus]\n[|Ebm <i>(build)</i>]I be[|  /  /]lieve");
+  const labels = (o: Partial<cp.RenderOpts>) =>
+    cp.renderSection(secs[0], { ...OPTS, ...o })[0].lines[0].chords.map(c => c.chord);
+  assert.deepEqual(labels({ rhythm: "all", notes: "slide" }), ["Ebm", "|/ /"]);
+  assert.deepEqual(labels({ rhythm: "instrumental", notes: "slide" }), ["Ebm"]);
 });
 
 test("lyrics-only drops chords and instrumental slides", () => {
