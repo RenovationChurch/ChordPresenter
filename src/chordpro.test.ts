@@ -98,6 +98,35 @@ test("lyrics-only drops chords and instrumental slides", () => {
   assert.deepEqual(cp.renderSection(section(secs, "Tag"), { ...OPTS, lyricsOnly: true })[0].lines[0].chords, []);
 });
 
+// ── Second real-world chart: parenthesized chords, multi-chord brackets ──────
+
+const AMAZING = readFileSync(new URL("./__fixtures__/amazing.chordpro", import.meta.url), "utf8");
+
+test("[(|Gb)] is an optional chord with a bar line, and transposes", () => {
+  const secs = load(AMAZING);
+  const pre = cp.renderSection(section(secs, "Pre-Chorus"), { ...OPTS, semitones: 2, preferFlat: true, notes: "slide" });
+  const last = pre[pre.length - 1];
+  assert.deepEqual(last.lines[0].chords.map(c => c.chord), ["(Ab)"]);
+  assert.deepEqual(last.notes, []);
+  assert.deepEqual(cp.tokenizeChord("(|Gb)"), [{ kind: "bar", text: "|" }, { kind: "chord", name: "(Gb)" }]);
+  assert.deepEqual(cp.tokenizeChord("(dropout)"), [{ kind: "note", text: "(dropout)" }]);
+});
+
+test("several chords in one bracket stay together and all transpose", () => {
+  const r = cp.renderSection(section(load(AMAZING), "Refrain 2 (2)"), { ...OPTS, semitones: 2, preferFlat: true, notes: "slide" });
+  const last = r[r.length - 1];
+  assert.deepEqual(last.lines[0].chords.map(c => c.chord), ["Fm - Eb/G Ab (Ab)"]);
+  assert.deepEqual(last.notes, ["gettin': let ring"]);
+});
+
+test("instrumental lines use figure spaces so chords don't run together", () => {
+  const intro = cp.renderSection(section(load(AMAZING), "Intro"), OPTS)[0].lines[0];
+  assert.match(intro.text, /^\u2007+$/);
+  assert.deepEqual(intro.chords.map(c => c.chord), ["|", "Gb", "|", "|", "Gbsus4", "|"]);
+  // each label has at least its own length of filler before the next one
+  intro.chords.slice(1).forEach((c, i) => assert.ok(c.pos >= intro.chords[i].pos + intro.chords[i].chord.length));
+});
+
 // ── General parsing ──────────────────────────────────────────────────────────
 
 test("ChordPro directives, codes and repeat markers", () => {

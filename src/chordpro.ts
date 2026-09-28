@@ -78,6 +78,18 @@ const TOKEN_RE = /\([^)]*\)|\|+|[^\s|]+/g;
 const BASS_ONLY_RE = /^\/[A-G][#b]?$/;
 const REPEAT_MARK_RE = /^(%|x\d+|\d+x)$/i;
 
+/** "(|Gb)" / "(Cb)" — an optional/passing chord in parentheses, possibly with
+ *  a bar line inside: bar + chord "(Gb)". Null when the group isn't chords
+ *  (it's a note like "(dropout)"). */
+function parenChordTokens(group: string): Tok[] | null {
+  const inner = group.replace(/^\(/, "").replace(/\)$/, "");
+  const parts = [...inner.matchAll(TOKEN_RE)].map(m => m[0]);
+  const isName = (x: string) => isChordName(x) || BASS_ONLY_RE.test(x);
+  if (!parts.some(isName) || !parts.every(x => x.startsWith("|") || /^\/+$/.test(x) || isName(x))) return null;
+  return parts.map((x): Tok => x.startsWith("|") ? { kind: "bar", text: x }
+    : /^\/+$/.test(x) ? { kind: "beat", text: x } : { kind: "chord", name: `(${x})` });
+}
+
 /** Tokens inside a chord bracket: "|B <i>(dropout)</i>" → bar, B, note. */
 export function tokenizeChord(inner: string): Tok[] {
   const { text, notes } = splitNotes(inner);
@@ -85,7 +97,7 @@ export function tokenizeChord(inner: string): Tok[] {
   for (const [t] of text.matchAll(TOKEN_RE)) {
     if (t.startsWith("|")) toks.push({ kind: "bar", text: t });
     else if (/^\/+$/.test(t)) toks.push({ kind: "beat", text: t });
-    else if (t.startsWith("(") && !isChordName(t)) toks.push({ kind: "note", text: t });
+    else if (t.startsWith("(") && !isChordName(t)) toks.push(...(parenChordTokens(t) ?? [{ kind: "note", text: t } as Tok]));
     // Anything else in brackets is a chord, even if we can't parse the name —
     // it's shown as written (and simply not transposed).
     else toks.push({ kind: "chord", name: t });
@@ -105,6 +117,11 @@ export function tokenizeBarLine(line: string): Tok[] | null {
     if (t.startsWith("|")) { toks.push({ kind: "bar", text: t }); bars++; }
     else if (/^\/+$/.test(t) || t === "%") toks.push({ kind: "beat", text: t });
     else if (isChordName(t) || BASS_ONLY_RE.test(t)) { toks.push({ kind: "chord", name: t }); chords++; }
+    else if (t.startsWith("(") && parenChordTokens(t)) {
+      const paren = parenChordTokens(t)!;
+      toks.push(...paren);
+      chords += paren.filter(x => x.kind === "chord").length;
+    }
     else if (t.startsWith("(") || REPEAT_MARK_RE.test(t)) toks.push({ kind: "note", text: t });
     else if (/^-+$/.test(t)) continue;
     else return null;
@@ -602,6 +619,11 @@ function chordText(toks: Tok[], o: RenderOpts, showRhythm: boolean, noteSink: st
   return s.trim();
 }
 
+/** Blank filler for instrumental lines. A plain space is about a quarter as
+ *  wide as a letter, so chords spread over spaces would run into each other;
+ *  a figure space (U+2007) is as wide as a digit — about one letter. */
+export const FILL = "\u2007";
+
 /** An instrumental line: blank lyric text with the chords spread over it. */
 function renderBars(toks: Tok[], o: RenderOpts, noteSink: string[]): { text: string; chords: ChordAt[] } {
   const showRhythm = o.rhythm !== "none";
@@ -616,7 +638,7 @@ function renderBars(toks: Tok[], o: RenderOpts, noteSink: string[]): { text: str
   const chords: ChordAt[] = [];
   let pos = 0;
   for (const a of atoms) { chords.push({ pos, chord: a }); pos += a.length + gap; }
-  return { text: " ".repeat(Math.max(1, pos - gap)), chords };
+  return { text: FILL.repeat(Math.max(1, pos - gap)), chords };
 }
 
 function wordAt(text: string, pos: number): string {
