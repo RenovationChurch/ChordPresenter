@@ -90,15 +90,32 @@ def _upper_same_length(text):
     return ''.join(u if len(u := ch.upper()) == 1 else ch for ch in text)
 
 
-def build_rtf(*lines):
-    """Build RTF-encoded lyric bytes for one or more lines (stored ALL CAPS).
+TEXT_CASES = ('upper', 'asis', 'line')
+
+
+def apply_case(text, case='upper'):
+    """Lyric capitalization, never changing the text's length:
+    'upper' = ALL CAPS, 'asis' = as written, 'line' = first letter of the line
+    capitalized. Mirrors applyCase in src/chordpro.ts."""
+    if case == 'upper':
+        return _upper_same_length(text)
+    if case == 'line':
+        for i, ch in enumerate(text):
+            if ch.isalpha():
+                up = ch.upper()
+                return text[:i] + (up if len(up) == 1 else ch) + text[i + 1:]
+    return text
+
+
+def build_rtf(*lines, case='upper'):
+    """Build RTF-encoded lyric bytes for one or more lines.
 
     Lines after the first are dropped when empty/None, so build_rtf(l1, None)
     keeps its old one-line behaviour. Each line break is ONE character in the
     text ProPresenter sees, which is what chord positions are counted against.
     """
     kept = [lines[0] or ''] + [l for l in lines[1:] if l]
-    text = '\\\n'.join(_rtf_escape(_upper_same_length(l.translate(_UNICODE_MAP)))
+    text = '\\\n'.join(_rtf_escape(apply_case(l.translate(_UNICODE_MAP), case))
                        for l in kept)
     return (RTF_HEADER + text + '}').encode('latin-1')
 
@@ -256,11 +273,12 @@ def _build_notes_bytes(text):
     return encode_lv(2, encode_lv(1, rtf) + encode_lv(2, b''))
 
 
-def build_slide(*lines, chord_positions=None, notes=None):
+def build_slide(*lines, chord_positions=None, notes=None, case='upper'):
     """
     Build a binary slide blob for one or more lyric lines.
     chord_positions : optional dict {char_pos: chord_name} for Vocals+Chords version.
     notes           : optional slide-notes text (stage display only).
+    case            : lyric capitalization — see apply_case().
     Returns (slide_bytes, slide_uuid_str).
     """
     new_slide_uid  = new_uuid().encode('ascii')
@@ -268,7 +286,7 @@ def build_slide(*lines, chord_positions=None, notes=None):
     new_uuid_mid   = new_uuid().encode('ascii')
     new_suffix_uid = new_uuid().encode('ascii')
 
-    new_rtf   = build_rtf(*lines)
+    new_rtf   = build_rtf(*lines, case=case)
     rtf_delta = len(new_rtf) - (RTF_END - RTF_START)
 
     # Replace all four source UUIDs (each appears exactly once in the template)
@@ -400,7 +418,7 @@ def lines_to_slides(lines):
 
 
 def build_pro_file(title, sections, arrangement_name="DoubleThickTheme", chord_data=None,
-                   slide_notes=None, arrangement_order=None):
+                   slide_notes=None, arrangement_order=None, case='upper'):
     """
     Build the complete binary content of a .pro file.
 
@@ -416,6 +434,7 @@ def build_pro_file(title, sections, arrangement_name="DoubleThickTheme", chord_d
                    arrangement's play order; an index may repeat (Chorus twice)
                    and the group's slides are reused, not duplicated.
                    Default: every section once, in order.
+    case         : lyric capitalization — 'upper' (default), 'asis', 'line'.
     """
     song_uuid = new_uuid()
     arr_uuid  = new_uuid()
@@ -446,7 +465,7 @@ def build_pro_file(title, sections, arrangement_name="DoubleThickTheme", chord_d
             chord_pos = chord_lookup[slide_index] if chord_lookup else None
             notes = slide_notes.get(slide_index) if slide_notes else None
             slide_bytes, slide_uid = build_slide(*slide_lines, chord_positions=chord_pos,
-                                                 notes=notes)
+                                                 notes=notes, case=case)
             slide_uuids.append(slide_uid)
             all_slides[slide_uid] = slide_bytes
             slide_index += 1

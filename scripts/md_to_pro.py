@@ -746,20 +746,23 @@ def capo_note(capo: int, concert_key: str, shapes_key: str) -> str:
 
 
 def build_song_pro(title: str, artist: str, sections, chord_map,
-                   lyrics_only: bool = False, first_slide_notes: str | None = None):
+                   lyrics_only: bool = False, first_slide_notes: str | None = None,
+                   opening_name: str = 'Opening', opening_count: int = 2,
+                   case: str = 'upper'):
     """
     Build a single .pro file with lyrics + optionally embedded chords.
-    Automatically prepends 2 blank slides in an "Opening" group so the operator
-    has space to add media backgrounds, audience look, etc.
+    Prepends `opening_count` blank slides (default 2) in an `opening_name`
+    group so the operator has space to add media backgrounds, audience look,
+    etc. opening_count=0 adds none.
 
     lyrics_only=True  → plain lyric slides only, no chord data on stage monitor.
     lyrics_only=False → current behaviour: chords embedded for stage monitor display.
 
     Returns binary .pro content.
     """
-    # Prepend 2 blank slides as an "Opening" section
-    blank_section  = [("Opening", ["", ""])]
-    blank_chords   = [("Opening", [("", {}), ("", {})])]
+    n = max(0, min(20, opening_count))
+    blank_section  = [(opening_name, [""] * n)] if n else []
+    blank_chords   = [(opening_name, [("", {})] * n)] if n else []
     all_sections   = blank_section + list(sections)
     all_chord_map  = blank_chords  + list(chord_map)
 
@@ -772,10 +775,10 @@ def build_song_pro(title: str, artist: str, sections, chord_map,
             chord_dicts = [chords for _, chords in lyric_chord_pairs]
             chord_data.append((sec_name, chord_dicts))
 
-    # Notes go on the first Opening slide: stage display only, never audience.
+    # Notes go on the first slide: stage display only, never audience.
     slide_notes = {0: first_slide_notes} if first_slide_notes else None
     return build_pro_file(title, all_sections, arrangement_name="DoubleThickTheme",
-                          chord_data=chord_data, slide_notes=slide_notes)
+                          chord_data=chord_data, slide_notes=slide_notes, case=case)
 
 
 # ────────────────────────────────────────────────────────────────
@@ -789,7 +792,8 @@ def _safe_filename(name: str) -> str:
 
 
 def process_file(filepath: str, target_key: str = None, output_dir: str = None,
-                 lyrics_only: bool = False, source_key: str = None, capo: int = 0):
+                 lyrics_only: bool = False, source_key: str = None, capo: int = 0,
+                 opening_name: str = 'Opening', opening_count: int = 2, case: str = 'upper'):
     """
     target_key : CONCERT key to output in (default: the song's concert key).
     source_key : key the chart's chord shapes are written in. ChordPresenter
@@ -849,7 +853,9 @@ def process_file(filepath: str, target_key: str = None, output_dir: str = None,
     file_name   = f"{display_name} - {key}{capo_tag}.pro"
     file_path   = os.path.join(out_dir, file_name)
     song_data   = build_song_pro(display_name, artist, sections, chord_map,
-                                  lyrics_only=lyrics_only, first_slide_notes=notes)
+                                  lyrics_only=lyrics_only, first_slide_notes=notes,
+                                  opening_name=opening_name, opening_count=opening_count,
+                                  case=case)
 
     with open(file_path, 'wb') as f:
         f.write(song_data)
@@ -868,6 +874,7 @@ def main():
     capo        = 0
     output_dir  = None
     lyrics_only = False
+    opening     = {}                 # --opening-name / --opening-count / --case
     filtered = []
     i = 0
     while i < len(args):
@@ -881,6 +888,12 @@ def main():
             output_dir = args[i + 1]; i += 2
         elif args[i] == '--lyrics-only':
             lyrics_only = True; i += 1
+        elif args[i] == '--opening-name' and i + 1 < len(args):
+            opening['opening_name'] = args[i + 1]; i += 2
+        elif args[i] == '--opening-count' and i + 1 < len(args):
+            opening['opening_count'] = int(args[i + 1]); i += 2
+        elif args[i] == '--case' and i + 1 < len(args):
+            opening['case'] = args[i + 1]; i += 2
         else:
             filtered.append(args[i]); i += 1
     args = filtered
@@ -903,13 +916,14 @@ def main():
         for fp in sorted(md_files):
             try:
                 process_file(fp, target_key=target_key, output_dir=output_dir,
-                             lyrics_only=lyrics_only, capo=capo)
+                             lyrics_only=lyrics_only, capo=capo, **opening)
             except Exception as e:
                 print(f"  ERROR: {e}")
     elif args:
         for fp in args:
             process_file(fp, target_key=target_key, output_dir=output_dir,
-                         lyrics_only=lyrics_only, source_key=source_key, capo=capo)
+                         lyrics_only=lyrics_only, source_key=source_key, capo=capo,
+                         **opening)
     else:
         print("Usage:")
         print("  python3 md_to_pro.py 'path/to/song.md'")

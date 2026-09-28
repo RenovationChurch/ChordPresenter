@@ -396,7 +396,10 @@ def _chord_positions_to_line(positions: dict[int, str]) -> str:
 
 def _slide_lyric_lines(slide_blob: bytes) -> list[str]:
     """Extract this slide's own lyric line(s) from its RTF block."""
-    rtf_blocks = _find_rtf_blocks(slide_blob)
+    # Only look inside the slide's visible elements (PresentationSlide.base_slide):
+    # its notes (PresentationSlide.notes) are RTF too, and must not be read as lyrics.
+    visible = _get_path(slide_blob, [10, 23, 2, 1]) or slide_blob
+    rtf_blocks = _find_rtf_blocks(visible)
     lines: list[str] = []
     for block in rtf_blocks:
         block_lines = _filter_lines(_extract_rtf_text(block))
@@ -408,7 +411,7 @@ def _slide_lyric_lines(slide_blob: bytes) -> list[str]:
 # MAIN PARSER
 # ══════════════════════════════════════════════════════════════════════════════
 
-def parse_pro_file(path: str) -> dict:
+def parse_pro_file(path: str, opening_name: str = 'Opening', opening_count: int = 2) -> dict:
     """
     Parse a ProPresenter .pro file and return:
     {
@@ -463,9 +466,12 @@ def parse_pro_file(path: str) -> dict:
 
     slides = []
     for i, (_gu, group_name, slide_uuids) in enumerate(ordered_groups):
-        # Skip the auto-generated 2-blank-slide "Opening" spacer — it isn't
-        # editable content and build_song_pro() always re-adds it on export.
-        if i == 0 and group_name == 'Opening' and len(slide_uuids) <= 2:
+        # Skip the auto-generated blank "Opening" spacer — it isn't editable
+        # content and export re-adds it (per the user's settings). Files made
+        # before the setting existed always used "Opening" with 2 slides.
+        if i == 0 and (group_name, len(slide_uuids)) in (
+                (opening_name, opening_count), ('Opening', 2)) and not any(
+                _slide_lyric_lines(slide_blobs.get(su, b'')) for su in slide_uuids):
             continue
         for su in slide_uuids:
             blob = slide_blobs.get(su)
@@ -495,8 +501,14 @@ def main():
         sys.exit(1)
 
     path = sys.argv[1]
+    opening = {}
+    args = sys.argv[2:]
+    for flag, key, conv in (('--opening-name', 'opening_name', str),
+                            ('--opening-count', 'opening_count', int)):
+        if flag in args and args.index(flag) + 1 < len(args):
+            opening[key] = conv(args[args.index(flag) + 1])
     try:
-        result = parse_pro_file(path)
+        result = parse_pro_file(path, **opening)
         print(json.dumps(result, ensure_ascii=False))
     except FileNotFoundError:
         print(json.dumps({"error": f"File not found: {path}"}))

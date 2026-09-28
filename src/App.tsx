@@ -5,12 +5,12 @@ import { listen } from "@tauri-apps/api/event";
 import "./App.css";
 import {
   MAJOR_KEYS, MINOR_KEYS, analyzeKey, canonicalKey, prefersFlats,
-  semitonesBetween, shiftKey, toConcert, transposeChart,
+  semitonesBetween, shiftKey, toConcert,
 } from "./music";
 import { buildPrintHtml } from "./print";
 import {
-  importToEditorText, parseEditorText, parsePcoChart, resolveArrangement,
-  toChordOverLyric, toSongJson,
+  NotesMode, RenderOpts, RhythmMode, TextCase, chordNames, importToEditorText,
+  parseEditorText, parsePcoChart, resolveArrangement, toChordOverLyric, toSongJson,
 } from "./chordpro";
 import PcoBrowser, { PcoLoadedSong } from "./PcoBrowser";
 import SlideEditor from "./SlideEditor";
@@ -108,16 +108,41 @@ function normalizeChartHeaders(chart: string): string {
 // ── Types ─────────────────────────────────────────────────────────────────────
 type Status     = "idle" | "running" | "ok" | "err";
 type Mode       = "file" | "url" | "pro" | "pco";
-type PrefsTab   = "folders" | "pco" | "log";
+type PrefsTab   = "folders" | "slides" | "pco" | "log";
 type OutputMode = "both" | "lyrics";
 
 interface AppConfig {
   output_dir: string;
   pco_app_id: string;
   pco_secret: string;
+  /** Blank slides at the start of every song, for the operator. */
+  opening_enabled: boolean;
+  opening_name: string;
+  opening_count: number;
+  text_case: TextCase;
+  rhythm_marks: RhythmMode;
+  chord_notes: NotesMode;
 }
 
-const EMPTY_CONFIG: AppConfig = { output_dir: "", pco_app_id: "", pco_secret: "" };
+// Defaults match the Rust Config defaults (src-tauri/src/main.rs).
+const EMPTY_CONFIG: AppConfig = {
+  output_dir: "", pco_app_id: "", pco_secret: "",
+  opening_enabled: true, opening_name: "Opening", opening_count: 2,
+  text_case: "upper", rhythm_marks: "instrumental", chord_notes: "beside",
+};
+
+/** A song loaded into the slide editor, from any source. */
+interface SongDoc {
+  source: "file" | "url" | "pco";
+  title: string;
+  artist: string;
+  /** Arrangement name (PCO) — shown under the title. */
+  subtitle: string;
+  /** Slide editor text (ChordPro, blank line = new slide). */
+  text: string;
+  /** Arrangement order, comma-separated section names ("" = as written). */
+  order: string;
+}
 
 /** Stage-display note for the first slide (same text as md_to_pro.capo_note). */
 function capoNote(capo: number, concertKey: string, shapesKey: string): string {
@@ -170,9 +195,9 @@ function PreferencesPanel({
     if (typeof sel === "string") setLocal(prev => ({ ...prev, output_dir: sel }));
   };
 
-  const persist = () => invoke("save_config", {
-    outputDir: local.output_dir, pcoAppId: local.pco_app_id, pcoSecret: local.pco_secret,
-  });
+  const persist = () => invoke("save_config", { config: local });
+  const set = <K extends keyof AppConfig>(k: K, v: AppConfig[K]) =>
+    setLocal(prev => ({ ...prev, [k]: v }));
 
   const save = async () => {
     await persist();
@@ -203,7 +228,7 @@ function PreferencesPanel({
   const shortPath = (p: string) =>
     p ? `…/${p.split("/").slice(-2).join("/")}` : "";
 
-  const FIELDS: { key: keyof AppConfig; label: string; hint: string }[] = [
+  const FIELDS: { key: "output_dir"; label: string; hint: string }[] = [
     { key: "output_dir", label: "Output Folder", hint: "ProPresenter-watched folder where .pro files are saved" },
   ];
 
@@ -219,6 +244,7 @@ function PreferencesPanel({
         {/* Tab bar */}
         <div className="prefs-tabs">
           <button className={`prefs-tab${tab === "folders" ? " active" : ""}`} onClick={() => setTab("folders")}>Folders</button>
+          <button className={`prefs-tab${tab === "slides"  ? " active" : ""}`} onClick={() => setTab("slides")}>Slides</button>
           <button className={`prefs-tab${tab === "pco"     ? " active" : ""}`} onClick={() => setTab("pco")}>Planning Center</button>
           <button className={`prefs-tab${tab === "log"     ? " active" : ""}`} onClick={() => setTab("log")}>Log</button>
         </div>
@@ -247,6 +273,66 @@ function PreferencesPanel({
           </div>
         )}
 
+        {/* Slides tab */}
+        {tab === "slides" && (
+          <div className="prefs-body">
+            <div className="prefs-row">
+              <label className="prefs-check">
+                <input type="checkbox" checked={local.opening_enabled}
+                       onChange={e => set("opening_enabled", e.target.checked)} />
+                <span className="prefs-label">Add blank slides at the start of each song</span>
+              </label>
+              <div className={`prefs-inline${local.opening_enabled ? "" : " prefs-inline--off"}`}>
+                <input className="url-input prefs-num" type="number" min={1} max={20}
+                       value={local.opening_count} disabled={!local.opening_enabled}
+                       onChange={e => set("opening_count", Math.max(1, Math.min(20, Number(e.target.value) || 1)))} />
+                <span className="prefs-hint">slide(s) in a group named</span>
+                <input className="url-input" value={local.opening_name} disabled={!local.opening_enabled}
+                       onChange={e => set("opening_name", e.target.value)} placeholder="Opening" />
+              </div>
+              <div className="prefs-hint">Room for backgrounds, walk-in media or an audience look before the first lyric.</div>
+            </div>
+
+            <div className="prefs-row">
+              <span className="prefs-label">Lyric capitalization</span>
+              <select className="key-select prefs-select" value={local.text_case}
+                      onChange={e => set("text_case", e.target.value as TextCase)}>
+                <option value="upper">ALL CAPS</option>
+                <option value="asis">As written</option>
+                <option value="line">Capitalize the first letter of each line</option>
+              </select>
+              <div className="prefs-hint">
+                "As written" keeps normal case on the stage display — turn on your ProPresenter
+                theme's All Caps to still show capitals to the audience.
+              </div>
+            </div>
+
+            <div className="prefs-row">
+              <span className="prefs-label">Bar lines ( | ) and beat slashes ( / )</span>
+              <select className="key-select prefs-select" value={local.rhythm_marks}
+                      onChange={e => set("rhythm_marks", e.target.value as RhythmMode)}>
+                <option value="instrumental">Only on instrumental lines (intro, turnaround…)</option>
+                <option value="all">Everywhere</option>
+                <option value="none">Hide — chord names only</option>
+              </select>
+            </div>
+
+            <div className="prefs-row">
+              <span className="prefs-label">Performance notes — <i>(italic)</i> text in charts</span>
+              <select className="key-select prefs-select" value={local.chord_notes}
+                      onChange={e => set("chord_notes", e.target.value as NotesMode)}>
+                <option value="beside">Next to the chord — "B (dropout)"</option>
+                <option value="slide">In the slide notes (stage display only)</option>
+                <option value="hide">Hide</option>
+              </select>
+              <div className="prefs-hint">
+                Notes on section headings are left off the slides unless "slide notes" is chosen.
+                To show slide notes, add a Slide Notes object to your stage layout.
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Planning Center tab */}
         {tab === "pco" && (
           <div className="prefs-body">
@@ -259,12 +345,12 @@ function PreferencesPanel({
             <div className="prefs-row">
               <span className="prefs-label">Application ID</span>
               <input className="url-input" value={local.pco_app_id} spellCheck={false}
-                     onChange={e => setLocal(prev => ({ ...prev, pco_app_id: e.target.value }))} />
+                     onChange={e => set("pco_app_id", e.target.value)} />
             </div>
             <div className="prefs-row">
               <span className="prefs-label">Secret</span>
               <input className="url-input" type="password" value={local.pco_secret} spellCheck={false}
-                     onChange={e => setLocal(prev => ({ ...prev, pco_secret: e.target.value }))} />
+                     onChange={e => set("pco_secret", e.target.value)} />
               <div className="prefs-hint">Stored in ~/.config/chordpresenter/config.json, readable only by you.</div>
             </div>
             <div className="prefs-row-top">
@@ -352,18 +438,21 @@ export default function App() {
   const [status, setStatus]           = useState<Status>("idle");
   const [message, setMessage]         = useState("");
 
+  // ── The song in the slide editor (from File, URL or Planning Center) ──
+  const [doc, setDoc]                 = useState<SongDoc | null>(null);
+  const [linesPerSlide, setLinesPerSlide] = useState(2);
+  const sections = useMemo(() => parseEditorText(doc?.text ?? ""), [doc?.text]);
+  const editDoc = useCallback((patch: Partial<SongDoc>) =>
+    setDoc(d => (d ? { ...d, ...patch } : d)), []);
+
   // ── File mode state ────────────────────────────────────────────
   const [mdPath, setMdPath]           = useState("");
-  const [title, setTitle]             = useState("");
-  const [artist, setArtist]           = useState("");
-  const [fileChart, setFileChart]     = useState("");   // editable chart preview
   const [isDragging, setIsDragging]   = useState(false);
 
   // ── URL mode state ─────────────────────────────────────────────
   const [urlInput, setUrlInput]     = useState("");
   const [isFetching, setIsFetching] = useState(false);
   const [ewData, setEwData]         = useState<EwData | null>(null);
-  const [editedChart, setEditedChart] = useState("");
 
   // ── Pro edit mode state ────────────────────────────────────────
   const [proPath, setProPath]     = useState("");
@@ -372,11 +461,6 @@ export default function App() {
   const [proLoading, setProLoading] = useState(false);
 
   // ── Planning Center mode state ─────────────────────────────────
-  const [pcoSong, setPcoSong]         = useState<PcoLoadedSong | null>(null);
-  const [pcoText, setPcoText]         = useState("");     // slide editor text
-  const [pcoOrder, setPcoOrder]       = useState("");     // arrangement, comma-separated
-  const [linesPerSlide, setLinesPerSlide] = useState(2);
-  const pcoSections = useMemo(() => parseEditorText(pcoText), [pcoText]);
   const pcoConnected = Boolean(config.pco_app_id && config.pco_secret);
 
   // ── Switch mode ────────────────────────────────────────────────
@@ -395,21 +479,43 @@ export default function App() {
     setOutputCapo(0);
   }, []);
 
+  // ── Any source → slide editor ──────────────────────────────────
+  // Parses the chart into sections, splits them into slides, and fills in
+  // the arrangement: the PCO sequence if it matches the chart, otherwise the
+  // chart's own order when it repeats a section (Chorus written 3 times).
+  const openInEditor = useCallback((
+    source: SongDoc["source"], meta: { title: string; artist: string; subtitle?: string },
+    chart: string, sequence: string[] = [],
+  ) => {
+    const imported = parsePcoChart(chart);
+    const text = importToEditorText(imported, linesPerSlide);
+    const secs = parseEditorText(text);
+    const seq = resolveArrangement(sequence, secs);
+    const repeats = new Set(imported.order).size !== imported.order.length;
+    const order = seq.order.length && !seq.unknown.length ? seq.order
+      : repeats ? imported.order : seq.order;
+    setDoc({ source, title: meta.title, artist: meta.artist, subtitle: meta.subtitle ?? "",
+             text, order: order.map(i => secs[i].name).join(", ") });
+    setStatus("idle"); setMessage("");
+    return { imported, sections: secs };
+  }, [linesPerSlide]);
+
   // ── File mode: load ────────────────────────────────────────────
   const loadFile = useCallback((path: string) => {
     setMdPath(path); setStatus("idle"); setMessage("");
     invoke<string>("read_file", { path })
       .then(content => {
         const meta = parseSongMeta(content);
-        setTitle(meta.title || path.split("/").pop()?.replace(/\.md$/, "") || "");
-        setArtist(meta.artist);
         const body = extractChartBody(content);
         const info = analyzeKey(content, body);
         applyKeyInfo(info);
-        setFileChart(normalizeChartHeaders(toConcert(body, info)));
+        openInEditor("file", {
+          title: meta.title || path.split("/").pop()?.replace(/\.md$/, "") || "",
+          artist: meta.artist,
+        }, normalizeChartHeaders(toConcert(body, info)));
       })
       .catch(err => { setStatus("err"); setMessage(String(err)); });
-  }, [applyKeyInfo]);
+  }, [applyKeyInfo, openInEditor]);
 
   // ── Pro edit mode: load .pro file ──────────────────────────────
   const loadProFile = useCallback(async (path: string) => {
@@ -481,14 +587,15 @@ export default function App() {
     if (typeof sel === "string") loadProFile(sel);
   }, [loadProFile]);
 
-  const clearFile = useCallback(() => {
-    setMdPath(""); setTitle(""); setArtist(""); setFileChart("");
+  const resetKeys = useCallback(() => {
     setDetectedKey(""); setTargetKey("");
     setSourceCapo(0); setSourceShapes(""); setOutputCapo(0);
-    setSourceCapo(0); setSourceShapes(""); setOutputCapo(0);
     setStatus("idle"); setMessage("");
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  const clearFile = useCallback(() => {
+    setMdPath(""); setDoc(null); resetKeys();
+  }, [resetKeys]);
 
   const clearPro = useCallback(() => {
     setProPath(""); setProTitle(""); setProSlides([]);
@@ -496,39 +603,27 @@ export default function App() {
   }, []);
 
   const clearUrl = useCallback(() => {
-    setUrlInput(""); setEwData(null); setEditedChart("");
-    setDetectedKey(""); setTargetKey("");
-    setSourceCapo(0); setSourceShapes(""); setOutputCapo(0);
-    setStatus("idle"); setMessage("");
-  }, []);
+    setUrlInput(""); setEwData(null); setDoc(null); resetKeys();
+  }, [resetKeys]);
 
-  const clearPco = useCallback(() => {
-    setPcoSong(null); setPcoText(""); setPcoOrder("");
-    setDetectedKey(""); setTargetKey("");
-    setSourceCapo(0); setSourceShapes(""); setOutputCapo(0);
-    setStatus("idle"); setMessage("");
-  }, []);
+  const clearPco = useCallback(() => { setDoc(null); resetKeys(); }, [resetKeys]);
 
   // ── Planning Center: song picked → slide editor ────────────────
   const loadPcoSong = useCallback((song: PcoLoadedSong) => {
-    const imported = parsePcoChart(song.chart);
-    const text = importToEditorText(imported, linesPerSlide);
-    const sections = parseEditorText(text);
+    const { imported, sections: secs } = openInEditor("pco",
+      { title: song.title, artist: song.artist, subtitle: song.arrangementName },
+      song.chart, song.sequence);
     // Key the chart is written in: PCO's chord_chart_key, then a {key:} line,
     // then detection from the chords themselves.
-    const info = analyzeKey("", toChordOverLyric(sections),
+    const info = analyzeKey("", chordNames(secs).join(" "),
                             canonicalKey(song.chartKey) || canonicalKey(imported.key), 0);
     applyKeyInfo(info);
     // Coming from a plan: default to the key the song is scheduled in.
     const planKey = canonicalKey(song.planKey);
     if (planKey && info.chartKey) setTargetKey(planKey);
-    const { order } = resolveArrangement(song.sequence, sections);
-    setPcoOrder(order.map(i => sections[i].name).join(", "));
-    setPcoSong(song); setPcoText(text);
     setOutputMode("both");
-    setStatus("idle");
-    setMessage(info.chartKey ? "" : "No chords found — this will export as lyrics only.");
-  }, [linesPerSlide, applyKeyInfo]);
+    if (!info.chartKey) setMessage("No chords found — this will export as lyrics only.");
+  }, [openInEditor, applyKeyInfo]);
 
   // ── Pro edit mode: update chords for a slide ───────────────────
   const updateSlideChords = useCallback((index: number, chords: string) => {
@@ -591,43 +686,32 @@ export default function App() {
     }
   }, [proSlides, proTitle, outputDir]);
 
-  const generateFromFile = useCallback(async () => {
-    if (!mdPath) return;
-    setStatus("running"); setMessage("Generating…");
+  // ── Key / capo / settings → how chords are rendered ────────────
+  const lyricsOnly = outputMode === "lyrics";
+  const exportKey = targetKey || detectedKey;
+  const exportCapo = lyricsOnly ? 0 : outputCapo;
+  const renderOpts = useMemo<RenderOpts & { shapesKey: string }>(() => {
+    let shapesKey = exportKey, semitones = 0;
     try {
-      const out = await invoke<string>("generate_from_url", {
-        title, artist,
-        chartText: fileChart,
-        targetKey: targetKey || null,
-        sourceKey: detectedKey || null,
-        capo: outputMode === "lyrics" ? 0 : outputCapo,
-        outputDir,
-        lyricsOnly: outputMode === "lyrics",
-      });
-      setStatus("ok");
-      const match = out.match(/→\s+(.+\.pro)/);
-      setMessage(match ? `Saved: ${match[1]}` : (out.trim() || "Done!"));
-    } catch (err) {
-      setStatus("err"); setMessage(String(err));
-    }
-  }, [mdPath, title, artist, fileChart, targetKey, detectedKey, outputCapo, outputDir, outputMode]);
-
-  // ── Planning Center: export the edited slides ──────────────────
-  const generateFromPco = useCallback(async () => {
-    if (!pcoSong) return;
-    const lyricsOnly = outputMode === "lyrics";
-    const key = targetKey || detectedKey;
-    const capo = lyricsOnly ? 0 : outputCapo;
-    let shapesKey = key, semitones = 0;
-    try {
-      if (key && capo) shapesKey = shiftKey(key, -capo);
+      if (exportKey && exportCapo) shapesKey = shiftKey(exportKey, -exportCapo);
       if (detectedKey && shapesKey) semitones = semitonesBetween(detectedKey, shapesKey);
-    } catch { /* unknown key label — export chords as written */ }
-    const order = resolveArrangement(pcoOrder.split(",").filter(s => s.trim()), pcoSections).order;
-    const song = toSongJson(pcoSections, {
-      title: pcoSong.title, artist: pcoSong.artist, key, capo,
-      notes: capo ? capoNote(capo, key, shapesKey) : undefined,
-      lyricsOnly, semitones, preferFlat: prefersFlats(shapesKey),
+    } catch { /* unknown key label — chords as written */ }
+    return {
+      shapesKey, semitones, preferFlat: prefersFlats(shapesKey), lyricsOnly,
+      rhythm: config.rhythm_marks, notes: config.chord_notes,
+    };
+  }, [exportKey, exportCapo, detectedKey, lyricsOnly, config.rhythm_marks, config.chord_notes]);
+
+  // ── Export the edited slides (all sources) ─────────────────────
+  const generateFromEditor = useCallback(async () => {
+    if (!doc) return;
+    const order = resolveArrangement(doc.order.split(",").filter(s => s.trim()), sections).order;
+    const song = toSongJson(sections, renderOpts, {
+      title: doc.title, artist: doc.artist, key: exportKey, capo: exportCapo,
+      notes: exportCapo ? capoNote(exportCapo, exportKey, renderOpts.shapesKey) : undefined,
+      textCase: config.text_case,
+      opening: { name: config.opening_name.trim() || "Opening",
+                 count: config.opening_enabled ? config.opening_count : 0 },
       arrangement: order.length ? order : undefined,
     });
     setStatus("running"); setMessage("Generating…");
@@ -639,7 +723,7 @@ export default function App() {
     } catch (err) {
       setStatus("err"); setMessage(String(err));
     }
-  }, [pcoSong, pcoSections, pcoOrder, targetKey, detectedKey, outputCapo, outputDir, outputMode]);
+  }, [doc, sections, renderOpts, exportKey, exportCapo, config, outputDir]);
 
   // ── URL mode: fetch ────────────────────────────────────────────
   const fetchEW = useCallback(async () => {
@@ -655,9 +739,10 @@ export default function App() {
         // Site key/capo win over what's written in the chart; chords fill in.
         const chart = data.chart_text || "";
         const info = analyzeKey(chart, chart, data.key || "", data.capo || 0);
-        setEwData(data); setEditedChart(normalizeChartHeaders(toConcert(chart, info)));
+        setEwData(data);
         applyKeyInfo(info);
-        setTitle(data.title || ""); setArtist(data.artist || "");
+        openInEditor("url", { title: data.title || "", artist: data.artist || "" },
+                     normalizeChartHeaders(toConcert(chart, info)));
         if (data.lyrics_only) setOutputMode("lyrics");
       }
     } catch (err) {
@@ -665,54 +750,22 @@ export default function App() {
     } finally {
       setIsFetching(false);
     }
-  }, [urlInput, applyKeyInfo]);
-
-  const generateFromUrl = useCallback(async () => {
-    if (!ewData) return;
-    setStatus("running"); setMessage("Generating…");
-    try {
-      const out = await invoke<string>("generate_from_url", {
-        title: ewData.title, artist: ewData.artist,
-        chartText: editedChart, targetKey: targetKey || null,
-        sourceKey: detectedKey || null,
-        capo: outputMode === "lyrics" ? 0 : outputCapo,
-        outputDir, lyricsOnly: outputMode === "lyrics",
-      });
-      setStatus("ok");
-      const match = out.match(/→\s+(.+\.pro)/);
-      setMessage(match ? `Saved: ${match[1]}` : (out.trim() || "Done!"));
-    } catch (err) {
-      setStatus("err"); setMessage(String(err));
-    }
-  }, [ewData, editedChart, targetKey, detectedKey, outputCapo, outputDir, outputMode]);
+  }, [urlInput, applyKeyInfo, openInEditor]);
 
   // ── Shared: print chart (current key + capo, as the stage monitor shows) ─
   const printChart = useCallback(async () => {
-    const chart = mode === "file" ? fileChart
-                : mode === "pco" ? toChordOverLyric(pcoSections) : editedChart;
-    if (!chart.trim()) return;
-    const key = targetKey || detectedKey;
-    const capo = outputMode === "lyrics" ? 0 : outputCapo;
-    let shapesKey = key, printed = chart;
-    try {
-      if (key && capo) shapesKey = shiftKey(key, -capo);
-      if (detectedKey && shapesKey) {
-        printed = transposeChart(chart, semitonesBetween(detectedKey, shapesKey), prefersFlats(shapesKey));
-      }
-    } catch { /* unknown key label — print the chart as-is */ }
-    const songTitle = mode === "file" ? title
-                    : mode === "pco" ? (pcoSong?.title || "") : (ewData?.title || "");
-    const songArtist = mode === "file" ? artist
-                     : mode === "pco" ? (pcoSong?.artist || "") : (ewData?.artist || "");
+    if (!doc) return;
+    const chart = toChordOverLyric(sections, renderOpts);     // already in the export key
     try {
       await invoke("open_print_view", {
-        title: `${songTitle || "Chart"}${key ? ` - ${key}` : ""}${capo ? ` (Capo ${capo})` : ""}`,
-        html: buildPrintHtml({ title: songTitle, artist: songArtist, key, capo, shapesKey, chart: printed }),
+        title: `${doc.title || "Chart"}${exportKey ? ` - ${exportKey}` : ""}${exportCapo ? ` (Capo ${exportCapo})` : ""}`,
+        html: buildPrintHtml({ title: doc.title, artist: doc.artist, key: exportKey, capo: exportCapo,
+                               shapesKey: renderOpts.shapesKey, chart }),
       });
     } catch (err) {
       setStatus("err"); setMessage(`Print failed: ${err}`);
     }
-  }, [mode, fileChart, editedChart, pcoSections, pcoSong, targetKey, detectedKey, outputCapo, outputMode, title, artist, ewData]);
+  }, [doc, sections, renderOpts, exportKey, exportCapo]);
 
   // ── Shared: output folder ──────────────────────────────────────
   const browseOutput = useCallback(async () => {
@@ -724,14 +777,11 @@ export default function App() {
   const hasFile     = Boolean(mdPath);
   const fileName    = mdPath.split("/").pop() ?? "";
   const hasOutputDir = Boolean(outputDir);
-  const pcoHasSlides = pcoSections.some(s => s.slides.length > 0);
-  const canGenerate = hasOutputDir && status !== "running" && (
-    mode === "file" ? hasFile && Boolean(fileChart)
-    : mode === "pco" ? Boolean(pcoSong) && pcoHasSlides
-    : Boolean(ewData) && !ewData?.error && !isFetching);
-
-  const canPrint = mode === "pco" ? pcoHasSlides
-    : Boolean((mode === "file" ? fileChart : editedChart).trim());
+  // The editor belongs to the tab its song came from.
+  const docHere     = doc && doc.source === mode ? doc : null;
+  const hasSlides   = sections.some(s => s.slides.length > 0);
+  const canGenerate = hasOutputDir && status !== "running" && Boolean(docHere) && hasSlides && !isFetching;
+  const canPrint    = Boolean(docHere) && hasSlides;
 
   // Key of the chord shapes written out for the current key + capo.
   let outputShapes = "";
@@ -740,9 +790,20 @@ export default function App() {
     if (k && outputCapo) outputShapes = shiftKey(k, -outputCapo);
   } catch { /* unknown key label */ }
 
-  const showSharedControls = (mode === "file" && hasFile)
-    || (mode === "pco" && Boolean(pcoSong))
-    || (mode === "url" && Boolean(ewData && !ewData.error));
+  const showSharedControls = Boolean(docHere);
+
+  const editor = docHere && (
+    <SlideEditor
+      text={docHere.text}
+      onChange={text => editDoc({ text })}
+      arrangement={docHere.order}
+      onArrangementChange={order => editDoc({ order })}
+      linesPerSlide={linesPerSlide}
+      onLinesPerSlideChange={setLinesPerSlide}
+      render={renderOpts}
+      textCase={config.text_case}
+    />
+  );
 
   return (
     <div className="app">
@@ -792,8 +853,8 @@ export default function App() {
               <div className="file-card">
                 <div className="file-icon">📄</div>
                 <div className="file-meta">
-                  <div className="file-song">{title || fileName}</div>
-                  {artist && <div className="file-artist">{artist}</div>}
+                  <div className="file-song">{docHere?.title || fileName}</div>
+                  {docHere?.artist && <div className="file-artist">{docHere.artist}</div>}
                   <div className="file-name">{fileName}</div>
                 </div>
                 <button className="clear-btn" title="Remove" onClick={e => { e.stopPropagation(); clearFile(); }}>✕</button>
@@ -807,18 +868,7 @@ export default function App() {
             )}
           </div>
 
-          {/* Chart preview / edit — shown once a file is loaded */}
-          {hasFile && fileChart && (
-            <div className="chart-section">
-              <div className="chart-label">Chart preview — edit before generating if needed:</div>
-              <textarea
-                className="chart-textarea"
-                value={fileChart}
-                onChange={e => setFileChart(e.target.value)}
-                spellCheck={false}
-              />
-            </div>
-          )}
+          {hasFile && editor}
         </>
       )}
 
@@ -854,17 +904,7 @@ export default function App() {
             </div>
           )}
 
-          {ewData && !ewData.error && (
-            <div className="chart-section">
-              <div className="chart-label">Chart preview — edit before generating if needed:</div>
-              <textarea
-                className="chart-textarea"
-                value={editedChart}
-                onChange={e => setEditedChart(e.target.value)}
-                spellCheck={false}
-              />
-            </div>
-          )}
+          {ewData && !ewData.error && editor}
         </>
       )}
 
@@ -878,29 +918,20 @@ export default function App() {
             onError={msg => { setStatus("err"); setMessage(msg); }}
           />
 
-          {pcoSong && (
+          {docHere && (
             <div className="ew-card">
               <div className="ew-card-icon">🎵</div>
               <div className="ew-card-meta">
-                <div className="ew-title">{pcoSong.title}</div>
+                <div className="ew-title">{docHere.title}</div>
                 <div className="ew-artist">
-                  {[pcoSong.artist, pcoSong.arrangementName].filter(Boolean).join(" · ")}
+                  {[docHere.artist, docHere.subtitle].filter(Boolean).join(" · ")}
                 </div>
               </div>
               <button className="clear-btn" title="Clear" onClick={clearPco}>✕</button>
             </div>
           )}
 
-          {pcoSong && (
-            <SlideEditor
-              text={pcoText}
-              onChange={setPcoText}
-              arrangement={pcoOrder}
-              onArrangementChange={setPcoOrder}
-              linesPerSlide={linesPerSlide}
-              onLinesPerSlideChange={setLinesPerSlide}
-            />
-          )}
+          {editor}
         </>
       )}
 
@@ -1126,7 +1157,7 @@ export default function App() {
           <div className="action-row">
             <button
               className={`generate-btn${!canGenerate ? " disabled" : ""}`}
-              onClick={mode === "file" ? generateFromFile : mode === "pco" ? generateFromPco : generateFromUrl}
+              onClick={generateFromEditor}
               disabled={!canGenerate}
               title={!hasOutputDir ? "Set an output folder in Preferences first" : undefined}
             >

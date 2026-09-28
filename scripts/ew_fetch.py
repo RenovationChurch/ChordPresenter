@@ -916,7 +916,7 @@ def parse_ew_page(html_content: str) -> dict:
 def generate_pro(title: str, artist: str, chart_text: str,
                  target_key: str | None, output_dir: str | None,
                  lyrics_only: bool = False, source_key: str | None = None,
-                 capo: int = 0):
+                 capo: int = 0, extra_args: list[str] | None = None):
     """Write a temp MD file and call md_to_pro.py to generate the .pro file."""
     md_content = convert_chart_to_md(chart_text, title, artist)
 
@@ -937,6 +937,7 @@ def generate_pro(title: str, artist: str, chart_text: str,
             cmd += ['--out', output_dir.strip()]
         if lyrics_only:
             cmd += ['--lyrics-only']
+        cmd += extra_args or []
 
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.stdout:
@@ -966,6 +967,9 @@ def main():
     ap.add_argument('--out',        help='Output directory for .pro file')
     ap.add_argument('--preview',     action='store_true',
                     help='Output JSON preview and exit (requires --url)')
+    ap.add_argument('--opening-name',  help='Name of the blank opening-slides group')
+    ap.add_argument('--opening-count', type=int, help='Blank opening slides (0 = none)')
+    ap.add_argument('--case', choices=['upper', 'asis', 'line'], help='Lyric capitalization')
     ap.add_argument('--lyrics-only', action='store_true',
                     help='Generate lyrics-only slides (no chord embedding)')
     args = ap.parse_args()
@@ -991,6 +995,14 @@ def main():
         return
 
     lyrics_only = getattr(args, 'lyrics_only', False)
+    # Slide settings are passed straight through to md_to_pro.py.
+    extra = []
+    if args.opening_name is not None:
+        extra += ['--opening-name', args.opening_name]
+    if args.opening_count is not None:
+        extra += ['--opening-count', str(args.opening_count)]
+    if args.case:
+        extra += ['--case', args.case]
 
     # ── Mode 2: Generate from URL ─────────────────────────────────
     if args.url and not args.chart_file:
@@ -1012,7 +1024,7 @@ def main():
         generate_pro(data['title'], data['artist'], data['chart_text'],
                      args.key or data.get('key') or None, args.out,
                      lyrics_only=effective_lyrics_only,
-                     source_key=src_key, capo=args.capo)
+                     source_key=src_key, capo=args.capo, extra_args=extra)
         return
 
     # ── Mode 3: Generate from chart file (user-edited) ────────────
@@ -1025,7 +1037,7 @@ def main():
             sys.exit(1)
         generate_pro(args.title, args.artist, chart_text, args.key, args.out,
                      lyrics_only=lyrics_only, source_key=args.source_key,
-                     capo=args.capo)
+                     capo=args.capo, extra_args=extra)
         return
 
     ap.print_help()

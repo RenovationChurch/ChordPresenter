@@ -63,16 +63,63 @@ fn clear_log(app: tauri::AppHandle) -> Result<(), String> {
 
 // ── Config ────────────────────────────────────────────────────────────────────
 
-#[derive(serde::Serialize, serde::Deserialize, Default, Clone)]
+// Every field has a default so config files written by older versions
+// (output_dir only) still load, with the new settings at their defaults.
+#[derive(serde::Serialize, serde::Deserialize, Clone)]
 struct Config {
     #[serde(default)]
     output_dir: String,
-    // Planning Center Personal Access Token. `default` lets config files
-    // written by older versions (output_dir only) still load.
+    // Planning Center Personal Access Token.
     #[serde(default)]
     pco_app_id: String,
     #[serde(default)]
     pco_secret: String,
+    // Blank slides added at the start of every song for the operator.
+    #[serde(default = "default_true")]
+    opening_enabled: bool,
+    #[serde(default = "default_opening_name")]
+    opening_name: String,
+    #[serde(default = "default_opening_count")]
+    opening_count: u32,
+    // Lyric capitalization: "upper" (ALL CAPS), "asis", "line" (first letter).
+    #[serde(default = "default_text_case")]
+    text_case: String,
+    // Bar lines / beat slashes: "instrumental" (only on chord-only lines), "all", "none".
+    #[serde(default = "default_rhythm_marks")]
+    rhythm_marks: String,
+    // <i>notes</i> in charts: "beside" the chord, in "slide" notes, or "hide".
+    #[serde(default = "default_chord_notes")]
+    chord_notes: String,
+}
+
+fn default_true() -> bool { true }
+fn default_opening_name() -> String { "Opening".into() }
+fn default_opening_count() -> u32 { 2 }
+fn default_text_case() -> String { "upper".into() }
+fn default_rhythm_marks() -> String { "instrumental".into() }
+fn default_chord_notes() -> String { "beside".into() }
+
+impl Default for Config {
+    fn default() -> Self {
+        // Same values as the serde defaults above.
+        serde_json::from_str("{}").expect("all Config fields have defaults")
+    }
+}
+
+impl Config {
+    /// Blank opening slides to add (0 when turned off).
+    fn opening_slides(&self) -> u32 {
+        if self.opening_enabled { self.opening_count.min(20) } else { 0 }
+    }
+
+    /// Slide settings as md_to_pro.py / ew_fetch.py / parse_pro.py flags.
+    fn slide_args(&self, cmd: &mut Command, with_case: bool) {
+        cmd.arg("--opening-count").arg(self.opening_slides().to_string());
+        cmd.arg("--opening-name").arg(&self.opening_name);
+        if with_case && ["upper", "asis", "line"].contains(&self.text_case.as_str()) {
+            cmd.arg("--case").arg(&self.text_case);
+        }
+    }
 }
 
 fn config_path() -> PathBuf {
@@ -99,17 +146,11 @@ fn get_config() -> Config {
 }
 
 #[tauri::command]
-fn save_config(
-    output_dir: String,
-    pco_app_id: Option<String>,
-    pco_secret: Option<String>,
-) -> Result<(), String> {
-    // Fields the caller leaves out keep their saved value.
-    let saved = load_config();
+fn save_config(config: Config) -> Result<(), String> {
     let config = Config {
-        output_dir,
-        pco_app_id: pco_app_id.map(|s| s.trim().to_string()).unwrap_or(saved.pco_app_id),
-        pco_secret: pco_secret.map(|s| s.trim().to_string()).unwrap_or(saved.pco_secret),
+        pco_app_id: config.pco_app_id.trim().to_string(),
+        pco_secret: config.pco_secret.trim().to_string(),
+        ..config
     };
     let path = config_path();
     std::fs::create_dir_all(path.parent().unwrap()).map_err(|e| e.to_string())?;
@@ -223,6 +264,7 @@ fn run_conversion(
     if lyrics_only.unwrap_or(false) {
         cmd.arg("--lyrics-only");
     }
+    load_config().slide_args(&mut cmd, true);
 
     run_python(&app, cmd, "run_conversion")
 }
@@ -300,6 +342,7 @@ fn generate_from_url(
     if lyrics_only.unwrap_or(false) {
         cmd.arg("--lyrics-only");
     }
+    load_config().slide_args(&mut cmd, true);
 
     let result = run_python(&app, cmd, "generate_from_url");
     let _ = std::fs::remove_file(&tmp_path);
@@ -398,6 +441,7 @@ fn parse_pro(app: tauri::AppHandle, pro_path: String) -> Result<String, String> 
     let script = script_path(&app, "parse_pro.py")?;
     let mut cmd = Command::new("python3");
     cmd.arg(&script).arg(canonical.to_string_lossy().to_string());
+    load_config().slide_args(&mut cmd, false);
     run_python(&app, cmd, "parse_pro")
         .map(|s| s.trim().to_string())
 }

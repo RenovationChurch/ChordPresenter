@@ -2,7 +2,7 @@
 """
 song_to_pro.py — Build a .pro file from ChordPresenter's slide editor.
 
-The editor (Planning Center mode) has already decided everything: which lines
+The slide editor has already decided everything: which lines
 go on which slide, and which chord sits over which character. This script only
 lays that out as ProPresenter slides — no heuristics, so what you see in the
 editor preview is what lands on the stage display.
@@ -14,10 +14,13 @@ Song JSON:
 {
   "title": "Amazing Grace", "artist": "", "key": "G", "capo": 0,
   "notes": "optional stage-display note for the first slide",
+  "text_case": "upper",                      // or "asis", "line"
+  "opening": {"name": "Opening", "count": 2}, // count 0 = no blank slides
   "sections": [
     {"name": "Verse 1", "slides": [
       {"lines": [{"text": "Amazing grace how sweet the sound",
-                  "chords": [{"pos": 8, "chord": "G"}]}]}
+                  "chords": [{"pos": 8, "chord": "G"}]}],
+       "notes": "optional slide notes (stage display only)"}
     ]}
   ],
   "arrangement": [0, 1, 2, 1]          // optional: section indices, repeats allowed
@@ -71,8 +74,17 @@ def layout_slide(lines: list[dict], with_chords: bool) -> tuple[tuple, dict]:
 
 def build_from_song(song: dict) -> bytes:
     with_chords = not song.get('lyrics_only', False)
-    sections = [('Opening', ['', ''])]               # blank slides for the operator
-    chord_data = [('Opening', [{}, {}])]
+    case = song.get('text_case') or 'upper'
+    opening = song.get('opening') or {'name': 'Opening', 'count': 2}
+    n_open = max(0, min(20, int(opening.get('count', 2) or 0)))
+
+    sections, chord_data = [], []
+    slide_notes: dict[int, str] = {}
+    if n_open:                                       # blank slides for the operator
+        name = str(opening.get('name') or 'Opening')
+        sections.append((name, [''] * n_open))
+        chord_data.append((name, [{}] * n_open))
+    slide_index = n_open
     for sec in song.get('sections', []):
         name = str(sec.get('name') or 'Slide')
         slide_entries, slide_chords = [], []
@@ -83,29 +95,39 @@ def build_from_song(song: dict) -> bytes:
             texts, positions = layout_slide(lines, with_chords)
             slide_entries.append(texts)
             slide_chords.append(positions)
+            if slide.get('notes'):
+                slide_notes[slide_index] = str(slide['notes'])
+            slide_index += 1
         if slide_entries:
             sections.append((name, slide_entries))
             chord_data.append((name, slide_chords))
 
-    # Arrangement indices refer to song["sections"]; shift by 1 for "Opening"
-    # and drop any that point at a section that ended up empty.
+    # The capo note goes on the first slide — an opening slide if there is
+    # one, otherwise ahead of the first song slide's own notes.
+    if song.get('notes'):
+        first = slide_notes.get(0)
+        slide_notes[0] = song['notes'] + (f'\n\n{first}' if first else '')
+
+    # Arrangement indices refer to song["sections"]; shift past the opening
+    # group and drop any that point at a section that ended up empty.
     order = None
     arrangement = song.get('arrangement') or []
     if arrangement:
         index_of = {}
-        built = 1
+        built = 1 if n_open else 0
         for i, sec in enumerate(song.get('sections', [])):
             if any(sl.get('lines') for sl in sec.get('slides', [])):
                 index_of[i] = built
                 built += 1
-        order = [0] + [index_of[i] for i in arrangement if isinstance(i, int) and i in index_of]
+        order = ([0] if n_open else []) + [
+            index_of[i] for i in arrangement if isinstance(i, int) and i in index_of]
 
-    notes = song.get('notes') or None
     return build_pro_file(display_name(song),
                           sections, arrangement_name='DoubleThickTheme',
                           chord_data=chord_data,
-                          slide_notes={0: notes} if notes else None,
-                          arrangement_order=order)
+                          slide_notes=slide_notes or None,
+                          arrangement_order=order or None,
+                          case=case if case in ('upper', 'asis', 'line') else 'upper')
 
 
 def display_name(song: dict) -> str:

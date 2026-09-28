@@ -46,6 +46,8 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Slide editor tests
+        run: pnpm test
       - name: Type-check and build frontend
         run: pnpm build
 

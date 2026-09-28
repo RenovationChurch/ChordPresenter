@@ -22,11 +22,32 @@ The **Planning Center** tab pulls chord charts straight from Planning Center Ser
 
 1. **Connect once:** create a Personal Access Token at `api.planningcenteronline.com/oauth/applications`, then paste the Application ID and Secret into **Preferences → Planning Center** and click **Test connection**. ChordPresenter only reads songs and plans. The token is stored in `~/.config/chordpresenter/config.json` (readable only by you).
 2. **Find a song:** search your song library, or pick **Upcoming plans** to see what's scheduled. Songs picked from a plan default to the key they're scheduled in.
-3. **Edit the slides** before exporting:
-   - **Lines per slide:** 1–4 for the whole song, or per section from the dropdown next to each section in the preview.
-   - **Fine-tune by hand** in the chart text: a blank line starts a new slide, `[Verse 1]` starts a section, and `[G]` puts a chord on the syllable right after it.
-   - **Order** is prefilled from the arrangement's sequence in Planning Center and becomes the ProPresenter arrangement, so a Chorus played three times is one group used three times.
+3. **Edit the slides** before exporting (see *Slide editor* below).
 4. **Key / Capo / Lyrics Only / Print** work the same as for the other tabs.
+
+## Slide editor
+
+Every song — from a File, a URL, or Planning Center — opens in the same editor before it's exported, with a live preview of each slide as the stage display will show it (in the export key, with your display settings).
+
+- **Reflow view** (like ProPresenter's reflow editor): just the words. A blank line is a slide break; press Enter to split a line or a slide, delete a line break to join. Chords stay attached to their words.
+- **Chords view**: the full chart, to change chords themselves. It uses the same syntax as Planning Center:
+  - `[G]` goes right before the syllable it's played on; `[|B]` / `[|]` bar lines, `[|  /  /]` beats, `[/C#]` bass-only
+  - `| B / / / | / / C#m7 / |` on its own line is an instrumental line (intro, turnaround…) and gets its own slide with the chords shown
+  - `<i>(dropout)</i>` is a performance note — inside a chord, on a lyric line, or after a section heading
+  - `[Verse 1]` or `VERSE 1` starts a section
+- **Lines per slide:** 1–4 for the whole song, or per section from the dropdown in the preview. The first split respects the stanza breaks (blank lines) in the chart.
+- **Order** becomes the ProPresenter arrangement. It's prefilled from Planning Center's sequence, or from the chart itself when it repeats a section — a Chorus written out three times becomes one group played three times (a repeat with different notes or words is kept as "Chorus (2)").
+
+## Slide settings (Preferences → Slides)
+
+| Setting | Options |
+|---|---|
+| Blank slides at the start | On/off, how many, and the group's name (default: 2 slides named "Opening") |
+| Lyric capitalization | ALL CAPS (default) · As written · First letter of each line |
+| Bar lines and beat slashes | Only on instrumental lines (default) · Everywhere · Hide |
+| Performance notes | Next to the chord, e.g. `B (dropout)` (default) · In the slide notes · Hide |
+
+"As written" keeps normal case on the stage display; turn on All Caps in your ProPresenter theme to still show capitals to the audience. Slide notes only appear on stage layouts that include a Slide Notes object. Notes on section headings are left off unless "slide notes" is chosen.
 
 ### How chords line up in ProPresenter
 
@@ -103,7 +124,7 @@ The `.pro` generation pipeline:
 | `song_to_pro.py` | Builds a `.pro` from the slide editor's JSON (Planning Center tab) |
 | `parse_pro.py` | Reads an existing `.pro` back into slides (Edit .pro tab) |
 
-Tests (no dependencies): `python3 -m unittest discover -s scripts/tests`
+Tests (no dependencies): `python3 -m unittest discover -s scripts/tests` and `pnpm test` (slide editor).
 
 ---
 
