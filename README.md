@@ -60,6 +60,24 @@ This is a free side project and always will be. First love the Church, second lo
 
 ---
 
+## Installing a test build
+
+Every pull request is built automatically by GitHub Actions (`.github/workflows/build.yml`) — no Rust or Xcode setup needed on your Mac.
+
+1. **Download:** open the pull request → **Checks** tab → **Build** → scroll to **Artifacts** → `ChordPresenter-macOS-<commit>`. It downloads as a `.zip`; double-click it to get the `.dmg`. (You can also run a build any time from **Actions → Build → Run workflow**.)
+2. **Install:** open the `.dmg` and drag ChordPresenter to Applications (replace the old copy).
+3. **First launch:** the app isn't code-signed with an Apple Developer ID, so macOS blocks it the first time:
+   - Try to open it once, then go to **System Settings → Privacy & Security**, scroll down, and click **Open Anyway**.
+   - If macOS instead says the app **"is damaged and can't be opened"**, run this once in Terminal and open it again:
+     ```bash
+     xattr -dr com.apple.quarantine /Applications/ChordPresenter.app
+     ```
+4. **Python 3** must be available: `python3 --version` in Terminal. If macOS offers to install the Command Line Developer Tools, accept — that provides it.
+
+The build is "universal", so it runs on both Apple Silicon and Intel Macs. Artifacts are kept for 14 days.
+
+---
+
 ## Build From Source
 
 Requires: Rust toolchain, Node + pnpm, Xcode CLI tools, Python 3. macOS only — cannot cross-compile.
