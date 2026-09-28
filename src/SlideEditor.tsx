@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import {
-  ChordAt, EditorSection, RenderOpts, TextCase, WRAP_WARN_CHARS, applyCase, editReflow,
+  ChordAt, EditorSection, RenderOpts, SlideStyle, TextCase, WRAP_WARN_CHARS, applyCase, editReflow,
   parseEditorText, rechunk, renderSection, resolveArrangement, serializeEditor, toReflow,
 } from "./chordpro";
 
@@ -39,7 +39,7 @@ function PreviewLine({ text, chords, showChordRow, textCase }: {
 
 export default function SlideEditor({
   text, onChange, arrangement, onArrangementChange, linesPerSlide, onLinesPerSlideChange,
-  render, textCase,
+  render, textCase, slideStyle,
 }: {
   text: string;
   onChange: (text: string) => void;
@@ -50,6 +50,8 @@ export default function SlideEditor({
   /** Key, capo and display settings — the preview shows exactly what exports. */
   render: RenderOpts;
   textCase: TextCase;
+  /** Font and bars, so the preview looks like the exported slides. */
+  slideStyle: SlideStyle;
 }) {
   const [view, setView] = useState<View>("reflow");
   const sections = useMemo(() => parseEditorText(text), [text]);
@@ -146,7 +148,8 @@ export default function SlideEditor({
                     slideNo++;
                     const hasChords = slide.lines.some(l => l.chords.length > 0);
                     return (
-                      <div className="pv-slide" key={i}>
+                      <div className={`pv-slide${slideStyle.line_bars ? " pv-slide--bars" : ""}`} key={i}
+                           style={{ fontFamily: `"${slideStyle.font_family}", "Helvetica Neue", sans-serif` }}>
                         <span className="pv-num">{slideNo}</span>
                         {slide.lines.map((line, j) => (
                           <PreviewLine key={j} text={line.text} chords={line.chords}

@@ -23,8 +23,10 @@ Lyrics format per section:
 
 from __future__ import annotations
 
-import uuid
 import os
+import re
+import struct
+import uuid
 
 # ────────────────────────────────────────────────────────────────
 # CONFIGURATION
@@ -66,16 +68,45 @@ def new_uuid():
 # RTF BUILDER
 # ────────────────────────────────────────────────────────────────
 
-RTF_HEADER = (
-    r'{\rtf1\ansi\ansicpg1252\cocoartf2870' + '\n'
-    + r'\cocoatextscaling0\cocoaplatform0'
-    + r'{\fonttbl\f0\fnil\fcharset0 TungstenNarrow-Bold;}' + '\n'
-    + r'{\colortbl;\red255\green255\blue255;\red255\green255\blue255;}' + '\n'
-    + r'{\*\expandedcolortbl;;\cssrgb\c100000\c100000\c100000;}' + '\n'
-    + r'\pard\sl20\slleading882\pardirnatural\qc\partightenfactor0' + '\n'
-    + '\n'
-    + r'\f0\fs506 \cf2 \kerning1\expnd16\expndtw80' + '\n'
-)
+# Slide look. The template was designed for TungstenNarrow-Bold at 253 pt;
+# line spacing, character tracking and the black line bars scale with size.
+DEFAULT_STYLE = {
+    'font_name': 'TungstenNarrow-Bold',   # PostScript name (what ProPresenter looks up)
+    'font_family': 'Tungsten Narrow',
+    'font_size': 253,                     # points, on a 1920x1080 slide
+    'line_bars': True,                    # black bar behind each line of text
+    'shrink_to_fit': False,               # let ProPresenter shrink text that overflows
+}
+_TEMPLATE_FONT_SIZE = 253
+
+
+def _style(style=None):
+    st = {**DEFAULT_STYLE, **{k: v for k, v in (style or {}).items() if v not in (None, '')}}
+    st['font_size'] = max(8.0, min(400.0, float(st['font_size'])))
+    st['line_bars'] = bool(st['line_bars'])
+    st['shrink_to_fit'] = bool(st['shrink_to_fit'])
+    # Font names go into RTF and protobuf strings -- keep them to safe characters.
+    for key in ('font_name', 'font_family'):
+        st[key] = re.sub(r'[^A-Za-z0-9 ._-]', '', str(st[key])) or DEFAULT_STYLE[key]
+    return st
+
+
+def _rtf_header(st):
+    r = st['font_size'] / _TEMPLATE_FONT_SIZE
+    return (
+        '{\\rtf1\\ansi\\ansicpg1252\\cocoartf2870\n'
+        '\\cocoatextscaling0\\cocoaplatform0'
+        '{\\fonttbl\\f0\\fnil\\fcharset0 ' + st['font_name'] + ';}\n'
+        '{\\colortbl;\\red255\\green255\\blue255;\\red255\\green255\\blue255;}\n'
+        '{\\*\\expandedcolortbl;;\\cssrgb\\c100000\\c100000\\c100000;}\n'
+        f'\\pard\\sl20\\slleading{round(882 * r)}\\pardirnatural\\qc\\partightenfactor0\n'
+        '\n'
+        f'\\f0\\fs{round(st["font_size"] * 2)} \\cf2 \\kerning1\\expnd{round(16 * r)}'
+        f'\\expndtw{round(80 * r)}\n'
+    )
+
+
+RTF_HEADER = _rtf_header(DEFAULT_STYLE)
 
 _UNICODE_MAP = str.maketrans({
     '‘': "'",  '’': "'",   # curly single quotes → straight
@@ -107,17 +138,29 @@ def apply_case(text, case='upper'):
     return text
 
 
-def build_rtf(*lines, case='upper'):
+def _slide_lines(lines, case='upper'):
+    """The lines as they'll appear on the slide: first line always kept, later
+    empty ones dropped, unicode tidied, capitalization applied."""
+    kept = [lines[0] or ''] + [l for l in lines[1:] if l]
+    return [apply_case(l.translate(_UNICODE_MAP), case) for l in kept]
+
+
+def _text_length(lines):
+    """Length of the slide text as ProPresenter counts it: lines joined by one
+    newline, in UTF-16 units (what attribute ranges and chord positions use)."""
+    text = '\n'.join(lines)
+    return len(text) + sum(1 for ch in text if ord(ch) > 0xFFFF)
+
+
+def build_rtf(*lines, case='upper', style=None):
     """Build RTF-encoded lyric bytes for one or more lines.
 
     Lines after the first are dropped when empty/None, so build_rtf(l1, None)
     keeps its old one-line behaviour. Each line break is ONE character in the
     text ProPresenter sees, which is what chord positions are counted against.
     """
-    kept = [lines[0] or ''] + [l for l in lines[1:] if l]
-    text = '\\\n'.join(_rtf_escape(apply_case(l.translate(_UNICODE_MAP), case))
-                       for l in kept)
-    return (RTF_HEADER + text + '}').encode('latin-1')
+    text = '\\\n'.join(_rtf_escape(l) for l in _slide_lines(lines, case))
+    return (_rtf_header(_style(style)) + text + '}').encode('latin-1')
 
 # ────────────────────────────────────────────────────────────────
 # SLIDE BUILDER  (binary template — DoubleThickTheme format,
@@ -131,33 +174,12 @@ TMPL_ELEM_UUID1  = b'4266A8FE-54E5-483C-85E1-91E8331F5AD9'  # elem UUID1  [51:87
 TMPL_UUID_MID    = b'1820E643-4883-44BA-9F11-F3BFACACDEC4'  # mid UUID    [111:147]
 TMPL_SUFFIX_UUID = b'F6936DDB-D9D7-4C01-ACF9-CBCE247FD559'  # suffix UUID [1170:1206]
 
-# Byte positions of 2-byte length varints that span the RTF region.
-# ALL 8 must be adjusted by (new_rtf_len - template_rtf_len) when RTF changes.
-# Found by walking every nested length-delimited field that contains [RTF_START:RTF_END].
-VARINT_POSITIONS = [
-    ( 45,  47),  # depth=0 field10 len=1163 — outermost slide body
-    ( 93,  95),  # depth=1 field23 len=1115
-    ( 96,  98),  # depth=2 field2  len=1112
-    ( 99, 101),  # depth=3 field1  len=1105
-    (102, 104),  # depth=4 field1  len=1035
-    (105, 107),  # depth=5 field1  len=1008
-    (463, 465),  # depth=6 field13 len= 628
-    (696, 698),  # depth=7 field5  len= 356 ← DIRECT RTF CONTAINER
-]
-
-# When chord data is inserted into the Attributes block (before RTF), only the OUTER
-# containers grow — NOT field5, which holds the RTF exclusively.
-# Use this shorter list for the chord-delta varint update pass.
-CHORD_VARINT_POSITIONS = VARINT_POSITIONS[:-1]   # all except field5 (696,698)
-
-RTF_START = 698   # byte offset of RTF within the Outdoor template slide blob
-RTF_END   = 1054  # exclusive (template RTF = 356 bytes)
-
-# Position of Text.Attributes field (field 3) length varint in the template.
-# Attributes content: [468:650] (182 bytes).  Chord entries appended at byte 650.
-_ATTR_LEN_POS = 466   # start of 2-byte length varint for Attributes
-_ATTR_LEN_END = 468   # end of that varint
-_ATTR_END     = 650   # end of Attributes content (= 468 + 182)
+# Where things live inside the template slide (Cue > action > slide >
+# presentation slide > base slide > element > ...). Edits go through _edit(),
+# which re-encodes every enclosing length, so nothing depends on byte offsets.
+PRESENTATION_SLIDE = [10, 23, 2]
+ELEMENT = PRESENTATION_SLIDE + [1, 1, 1]    # the lyric text box (Graphics.Element)
+TEXT = ELEMENT + [13]                       # Graphics.Text: 3 attributes, 5 RTF, 7 scale behavior
 
 # --- Template slide bytes (embedded — no external file dependency) ---
 # Extracted from: Example Song2ndedit.pro, slide 14 ("oh hallelujah")
@@ -198,9 +220,7 @@ _TEMPLATE_HEX = (
 )
 
 LYRIC_TEMPLATE = bytes.fromhex(_TEMPLATE_HEX.replace(' ', '').replace('\n', ''))
-_rtf_tag = b'{\\rtf1'
-assert len(LYRIC_TEMPLATE) == 1212 and LYRIC_TEMPLATE.find(_rtf_tag) == RTF_START, \
-    f"Template size={len(LYRIC_TEMPLATE)}, RTF at {LYRIC_TEMPLATE.find(_rtf_tag)} — expected 1212 / {RTF_START}"
+assert len(LYRIC_TEMPLATE) == 1212, f'Template size={len(LYRIC_TEMPLATE)}, expected 1212'
 
 
 def _build_chord_attr_bytes(chord_positions):
@@ -232,17 +252,131 @@ def _build_chord_attr_bytes(chord_positions):
     return result
 
 
+def _iter_fields(buf):
+    """Yield (field_number, raw_field_bytes) for each top-level protobuf field."""
+    pos = 0
+    while pos < len(buf):
+        start = pos
+        tag, n = decode_varint(buf, pos)
+        pos += n
+        wire = tag & 7
+        if wire == 0:
+            _, n = decode_varint(buf, pos)
+            pos += n
+        elif wire == 1:
+            pos += 8
+        elif wire == 5:
+            pos += 4
+        elif wire == 2:
+            length, n = decode_varint(buf, pos)
+            pos += n + length
+        else:
+            raise ValueError(f'unexpected wire type {wire}')
+        yield tag >> 3, buf[start:pos]
+
+
+def _payload(raw):
+    """The contents of a length-delimited field, given its raw bytes."""
+    _, n = decode_varint(raw, 0)
+    length, m = decode_varint(raw, n)
+    return raw[n + m:n + m + length]
+
+
+def _get(msg, path):
+    """The message at `path` (first match at each level)."""
+    for field in path:
+        msg = next(_payload(raw) for f, raw in _iter_fields(msg) if f == field)
+    return msg
+
+
+def _set_field(msg, field, raw):
+    """Replace the first `field` in msg with `raw` (tagged bytes), remove it
+    (raw=None), or insert it before the first higher-numbered field."""
+    out, done = b'', False
+    for f, old in _iter_fields(msg):
+        if not done and f == field:
+            out += raw or b''
+            done = True
+        elif not done and f > field and raw:
+            out += raw + old
+            done = True
+        else:
+            out += old
+    return out if done or not raw else out + raw
+
+
+def _edit(msg, path, fn):
+    """Apply fn to the message at `path` (first match at each level) and
+    rebuild every enclosing length."""
+    if not path:
+        return fn(msg)
+    out, done = b'', False
+    for f, raw in _iter_fields(msg):
+        if not done and f == path[0]:
+            out += encode_lv(f, _edit(_payload(raw), path[1:], fn))
+            done = True
+        else:
+            out += raw
+    if not done:
+        raise KeyError(path)
+    return out
+
+
+def _varint_field(field, value):
+    return encode_varint(field << 3) + encode_varint(value)
+
+
+def _double_field(field, value):
+    return encode_varint((field << 3) | 1) + struct.pack('<d', float(value))
+
+
+def _font(st):
+    """rv.data.Font { name = 1; size = 2; family = 9; }"""
+    return (encode_lv(1, st['font_name'].encode()) + _double_field(2, st['font_size'])
+            + encode_lv(9, st['font_family'].encode()))
+
+
+# The template's Text.Attributes. Its per-character rules (ALL CAPS + font)
+# only covered the template's own 13-character text ("oh hallelujah"), which
+# left the rest of every slide un-capitalized in ProPresenter -- so they're
+# rebuilt per slide to cover the whole text (_build_attributes).
+def _build_attributes(text_len, case, chord_positions, st):
+    """Text.Attributes for one slide: the template's base style with the
+    chosen font, and per-character rules that cover the whole text.
+
+    ALL CAPS ('upper') sets capitalization on the whole text; the other modes
+    leave it off so the lyrics keep the case they were written in (a theme's
+    own All Caps can still apply to the audience output)."""
+    whole = encode_lv(1, _varint_field(2, text_len))           # IntRange 0..len
+    out = b''
+    for f, raw in _iter_fields(_get(LYRIC_TEMPLATE, TEXT + [3])):
+        if f == 1:
+            out += encode_lv(1, _font(st))                     # font
+        elif f == 13 or (f == 2 and case != 'upper'):
+            continue                                           # per-character rules / caps
+        else:
+            out += raw
+    if case == 'upper':
+        out += encode_lv(13, whole + _varint_field(2, 1))     # capitalization = ALL CAPS
+    out += encode_lv(13, whole + encode_lv(12, _font(st)))    # original_font
+    return out + _build_chord_attr_bytes(chord_positions or {})
+
+
+def _style_element(element, st):
+    """The text box: a black bar behind each line (Element.text_line_mask,
+    painted with the box's fill) -- or no bars and no fill at all."""
+    if not st['line_bars']:
+        return _set_field(_set_field(element, 14, None), 9, None)
+    r = st['font_size'] / _TEMPLATE_FONT_SIZE
+    mask = _varint_field(1, 1) + _double_field(2, -8 * r) + _double_field(3, -33 * r)
+    return _set_field(element, 14, encode_lv(14, mask))
+
+
 # Slide notes (PresentationSlide.notes, field 2) — shown on any stage layout
 # that includes a "Slide Notes" object, never on the audience output.
 # Layout matches notes written by ProPresenter itself:
 #   PresentationSlide { base_slide=1, notes=2 { rtf_data=1, attributes=2 }, transition=4 }
-# The template has no notes, so they're inserted right before its trailing
-# transition (f4 "22 02 18 01") + Cue field 12 ("60 01") = the last 6 bytes.
-_NOTES_TAIL_LEN = 6
-# Varints of the containers that enclose PresentationSlide (Cue f10 action,
-# Action f23 slide type, SlideType f2 presentation slide). All sit before the
-# Attributes/RTF regions, so earlier edits never shift them.
-NOTES_VARINT_POSITIONS = VARINT_POSITIONS[:3]
+# The template has no notes; they're set as PresentationSlide field 2.
 
 _NOTES_RTF_HEADER = (
     '{\\rtf1\\ansi\\ansicpg1252\\cocoartf2870\n'
@@ -273,82 +407,39 @@ def _build_notes_bytes(text):
     return encode_lv(2, encode_lv(1, rtf) + encode_lv(2, b''))
 
 
-def build_slide(*lines, chord_positions=None, notes=None, case='upper'):
+def build_slide(*lines, chord_positions=None, notes=None, case='upper', style=None):
     """
     Build a binary slide blob for one or more lyric lines.
     chord_positions : optional dict {char_pos: chord_name} for Vocals+Chords version.
     notes           : optional slide-notes text (stage display only).
-    case            : lyric capitalization — see apply_case().
+    case            : lyric capitalization -- see apply_case().
+    style           : font / size / bars -- see DEFAULT_STYLE.
     Returns (slide_bytes, slide_uuid_str).
     """
-    new_slide_uid  = new_uuid().encode('ascii')
-    new_elem_uid1  = new_uuid().encode('ascii')
-    new_uuid_mid   = new_uuid().encode('ascii')
-    new_suffix_uid = new_uuid().encode('ascii')
+    st = _style(style)
+    new_slide_uid = new_uuid().encode('ascii')
 
-    new_rtf   = build_rtf(*lines, case=case)
-    rtf_delta = len(new_rtf) - (RTF_END - RTF_START)
+    # Fresh UUIDs (each template UUID appears exactly once)
+    sb = (LYRIC_TEMPLATE
+          .replace(TMPL_SLIDE_UUID, new_slide_uid)
+          .replace(TMPL_ELEM_UUID1, new_uuid().encode('ascii'))
+          .replace(TMPL_UUID_MID, new_uuid().encode('ascii'))
+          .replace(TMPL_SUFFIX_UUID, new_uuid().encode('ascii')))
 
-    # Replace all four source UUIDs (each appears exactly once in the template)
-    sb = LYRIC_TEMPLATE
-    sb = sb.replace(TMPL_SLIDE_UUID,  new_slide_uid)
-    sb = sb.replace(TMPL_ELEM_UUID1,  new_elem_uid1)
-    sb = sb.replace(TMPL_UUID_MID,    new_uuid_mid)
-    sb = sb.replace(TMPL_SUFFIX_UUID, new_suffix_uid)
-    sb = bytearray(sb)
+    attrs = _build_attributes(_text_length(_slide_lines(lines, case)), case, chord_positions, st)
+    rtf = build_rtf(*lines, case=case, style=st)
 
-    # Swap in the new RTF block
-    sb = bytearray(bytes(sb[:RTF_START]) + new_rtf + bytes(sb[RTF_END:]))
+    def text(t):
+        t = _set_field(t, 3, encode_lv(3, attrs))
+        t = _set_field(t, 5, encode_lv(5, rtf))
+        # Graphics.Text.scale_behavior: 2 = shrink the font down to fit the box
+        return _set_field(t, 7, _varint_field(7, 2) if st['shrink_to_fit'] else None)
 
-    # Update all spanning varints for the RTF size change
-    for vpos, vend in VARINT_POSITIONS:
-        old_val, _ = decode_varint(sb, vpos)
-        new_val    = old_val + rtf_delta
-        new_bytes  = encode_varint(new_val)
-        while len(new_bytes) < (vend - vpos):
-            new_bytes = new_bytes[:-1] + bytes([new_bytes[-1] | 0x80, 0x00])
-        sb[vpos:vend] = new_bytes[: vend - vpos]
-
-    # Inject chord CustomAttribute entries into Text.Attributes (before RTF)
-    if chord_positions:
-        chord_bytes = _build_chord_attr_bytes(chord_positions)
-        chord_delta = len(chord_bytes)
-
-        # Insert at end of Attributes content (right before RTF field tag)
-        sb = bytearray(bytes(sb[:_ATTR_END]) + chord_bytes + bytes(sb[_ATTR_END:]))
-
-        # Update Attributes length varint (2-byte slot)
-        old_len, _ = decode_varint(sb, _ATTR_LEN_POS)
-        new_len    = old_len + chord_delta
-        nb = encode_varint(new_len)
-        while len(nb) < (_ATTR_LEN_END - _ATTR_LEN_POS):
-            nb = nb[:-1] + bytes([nb[-1] | 0x80, 0x00])
-        sb[_ATTR_LEN_POS:_ATTR_LEN_END] = nb[:_ATTR_LEN_END - _ATTR_LEN_POS]
-
-        # Update outer spanning varints (excludes the direct RTF container).
-        # Varints at positions >= _ATTR_END have physically shifted by chord_delta.
-        for vpos, vend in CHORD_VARINT_POSITIONS:
-            actual_vpos = vpos + chord_delta if vpos >= _ATTR_END else vpos
-            actual_vend = vend + chord_delta if vend  > _ATTR_END else vend
-            old_val, _ = decode_varint(sb, actual_vpos)
-            new_val    = old_val + chord_delta
-            new_bytes  = encode_varint(new_val)
-            while len(new_bytes) < (actual_vend - actual_vpos):
-                new_bytes = new_bytes[:-1] + bytes([new_bytes[-1] | 0x80, 0x00])
-            sb[actual_vpos:actual_vend] = new_bytes[: actual_vend - actual_vpos]
-
+    sb = _edit(sb, TEXT, text)
+    sb = _edit(sb, ELEMENT, lambda e: _style_element(e, st))
     if notes:
-        notes_bytes = _build_notes_bytes(notes)
-        at = len(sb) - _NOTES_TAIL_LEN
-        sb = bytearray(bytes(sb[:at]) + notes_bytes + bytes(sb[at:]))
-        for vpos, vend in NOTES_VARINT_POSITIONS:
-            old_val, _ = decode_varint(sb, vpos)
-            new_bytes  = encode_varint(old_val + len(notes_bytes))
-            while len(new_bytes) < (vend - vpos):
-                new_bytes = new_bytes[:-1] + bytes([new_bytes[-1] | 0x80, 0x00])
-            sb[vpos:vend] = new_bytes[: vend - vpos]
-
-    return bytes(sb), new_slide_uid.decode('ascii')
+        sb = _edit(sb, PRESENTATION_SLIDE, lambda ps: _set_field(ps, 2, _build_notes_bytes(notes)))
+    return sb, new_slide_uid.decode('ascii')
 
 
 # ────────────────────────────────────────────────────────────────
@@ -417,8 +508,26 @@ def lines_to_slides(lines):
     return slides
 
 
+# ProPresenter's key names (rv.data.MusicKeyScale.MusicKey)
+_MUSIC_KEYS = ['Ab', 'A', 'A#', 'Bb', 'B', 'B#', 'Cb', 'C', 'C#', 'Db', 'D',
+               'D#', 'Eb', 'E', 'E#', 'Fb', 'F', 'F#', 'Gb', 'G', 'G#']
+
+
+def build_music(key):
+    """Presentation.Music: the key the chords are written in, as both the
+    original and the current key, so ProPresenter can transpose from it.
+    Returns b'' for a key it can't name."""
+    m = re.match(r'^([A-G][#b]?)(m(?!aj))?', (key or '').strip())
+    if not m or m.group(1) not in _MUSIC_KEYS:
+        return b''
+    scale = (_varint_field(1, _MUSIC_KEYS.index(m.group(1)))       # MusicKeyScale.music_key
+             + _varint_field(2, 1 if m.group(2) else 0))           # .music_scale: major / minor
+    return encode_lv(3, scale) + encode_lv(4, scale)               # Music.original / Music.user
+
+
 def build_pro_file(title, sections, arrangement_name="DoubleThickTheme", chord_data=None,
-                   slide_notes=None, arrangement_order=None, case='upper'):
+                   slide_notes=None, arrangement_order=None, case='upper', style=None,
+                   music_key=None):
     """
     Build the complete binary content of a .pro file.
 
@@ -435,6 +544,9 @@ def build_pro_file(title, sections, arrangement_name="DoubleThickTheme", chord_d
                    and the group's slides are reused, not duplicated.
                    Default: every section once, in order.
     case         : lyric capitalization — 'upper' (default), 'asis', 'line'.
+    style        : font / size / line bars — see DEFAULT_STYLE.
+    music_key    : key the chords are written in ("G", "F#m") — lets
+                   ProPresenter know the song's key and transpose from it.
     """
     song_uuid = new_uuid()
     arr_uuid  = new_uuid()
@@ -465,7 +577,7 @@ def build_pro_file(title, sections, arrangement_name="DoubleThickTheme", chord_d
             chord_pos = chord_lookup[slide_index] if chord_lookup else None
             notes = slide_notes.get(slide_index) if slide_notes else None
             slide_bytes, slide_uid = build_slide(*slide_lines, chord_positions=chord_pos,
-                                                 notes=notes, case=case)
+                                                 notes=notes, case=case, style=style)
             slide_uuids.append(slide_uid)
             all_slides[slide_uid] = slide_bytes
             slide_index += 1
@@ -484,6 +596,11 @@ def build_pro_file(title, sections, arrangement_name="DoubleThickTheme", chord_d
     for _, _, slide_uids in groups:
         for uid in slide_uids:
             out += encode_lv(13, all_slides[uid])
+
+    # ── field 23 : music key ─────────────────────────────────────
+    music = build_music(music_key)
+    if music:
+        out += encode_lv(23, music)
 
     return out
 

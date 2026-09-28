@@ -970,6 +970,7 @@ def main():
     ap.add_argument('--opening-name',  help='Name of the blank opening-slides group')
     ap.add_argument('--opening-count', type=int, help='Blank opening slides (0 = none)')
     ap.add_argument('--case', choices=['upper', 'asis', 'line'], help='Lyric capitalization')
+    ap.add_argument('--style', help='Slide style as JSON (font_name, font_family, font_size, line_bars, shrink_to_fit)')
     ap.add_argument('--lyrics-only', action='store_true',
                     help='Generate lyrics-only slides (no chord embedding)')
     args = ap.parse_args()
@@ -1003,6 +1004,8 @@ def main():
         extra += ['--opening-count', str(args.opening_count)]
     if args.case:
         extra += ['--case', args.case]
+    if args.style:
+        extra += ['--style', args.style]
 
     # ── Mode 2: Generate from URL ─────────────────────────────────
     if args.url and not args.chart_file:

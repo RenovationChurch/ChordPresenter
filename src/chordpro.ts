@@ -645,10 +645,20 @@ export function applyCase(text: string, mode: TextCase): string {
 
 // ── Export ───────────────────────────────────────────────────────────────────
 
+/** Lyric text box look (see DEFAULT_STYLE in scripts/create_pro_song.py). */
+export interface SlideStyle {
+  font_name: string; font_family: string; font_size: number;
+  line_bars: boolean; shrink_to_fit: boolean;
+}
+
 export interface SongJson {
   title: string; artist: string; key: string; capo: number;
   notes?: string; text_case: TextCase;
   opening: { name: string; count: number };
+  style: SlideStyle;
+  /** Key the chords are written in (after capo) — ProPresenter's original key. */
+  chord_key: string;
+  file_name?: string;
   sections: { name: string; slides: { lines: { text: string; chords: ChordAt[] }[]; notes?: string }[] }[];
   arrangement?: number[];
 }
@@ -656,11 +666,13 @@ export interface SongJson {
 export function toSongJson(
   sections: EditorSection[], render: RenderOpts,
   meta: { title: string; artist: string; key: string; capo: number; notes?: string;
-          textCase: TextCase; opening: { name: string; count: number }; arrangement?: number[] },
+          textCase: TextCase; opening: { name: string; count: number }; arrangement?: number[];
+          style: SlideStyle; chordKey: string; fileName?: string },
 ): SongJson {
   return {
     title: meta.title, artist: meta.artist, key: meta.key, capo: meta.capo, notes: meta.notes,
     text_case: meta.textCase, opening: meta.opening, arrangement: meta.arrangement,
+    style: meta.style, chord_key: render.lyricsOnly ? "" : meta.chordKey, file_name: meta.fileName,
     sections: sections.map(sec => ({
       name: sec.name,
       slides: renderSection(sec, render).map(s => ({

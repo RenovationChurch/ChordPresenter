@@ -38,16 +38,27 @@ Every song — from a File, a URL, or Planning Center — opens in the same edit
 - **Lines per slide:** 1–4 for the whole song, or per section from the dropdown in the preview. The first split respects the stanza breaks (blank lines) in the chart.
 - **Order** becomes the ProPresenter arrangement. It's prefilled from Planning Center's sequence, or from the chart itself when it repeats a section — a Chorus written out three times becomes one group played three times (a repeat with different notes or words is kept as "Chorus (2)").
 
+## Exporting
+
+**Export .pro File…** opens a dialog to name the file, choose the folder, and choose whether the key goes in the file name (e.g. `Great Things - Phil Wickham - B.pro`). The key choice is remembered. If a file with that name already exists, the dialog says so and the button changes to **Replace**.
+
+## Changing the key in ProPresenter
+
+Each exported file records the key its chords are written in (ProPresenter's "original key" — after any capo). In ProPresenter, set the key on the song in your playlist; ProPresenter uses the original key to transpose the chords on the stage display. You can also re-export from ChordPresenter in another key at any time.
+
 ## Slide settings (Preferences → Slides)
 
 | Setting | Options |
 |---|---|
+| Lyrics font and size | A font from the list (all come with macOS) or any installed font by PostScript name; size in points on a 1920×1080 slide (default Helvetica Neue Bold, 90 pt). The app shows whether the font is installed. |
+| Shrink lines that don't fit | On (default): ProPresenter scales the font down for long lines instead of overflowing |
+| Black bar behind each line | On (default) / off. The bars scale with the font size |
 | Blank slides at the start | On/off, how many, and the group's name (default: 2 slides named "Opening") |
 | Lyric capitalization | ALL CAPS (default) · As written · First letter of each line |
 | Bar lines and beat slashes | Only on instrumental lines (default) · Everywhere · Hide |
 | Performance notes | Next to the chord, e.g. `B (dropout)` (default) · In the slide notes · Hide |
 
-"As written" keeps normal case on the stage display; turn on All Caps in your ProPresenter theme to still show capitals to the audience. Slide notes only appear on stage layouts that include a Slide Notes object. Notes on section headings are left off unless "slide notes" is chosen.
+The computer that runs ProPresenter needs the font installed too, or it will substitute another one. "As written" keeps normal case on the stage display; turn on All Caps in your ProPresenter theme to still show capitals to the audience. Slide notes only appear on stage layouts that include a Slide Notes object. Notes on section headings are left off unless "slide notes" is chosen.
 
 ### How chords line up in ProPresenter
 

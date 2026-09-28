@@ -24,6 +24,7 @@ Theme: DoubleThickTheme (TungstenNarrow-Bold, white text, two thick black lines)
 
 from __future__ import annotations
 
+import json
 import re
 import os
 import sys
@@ -748,7 +749,8 @@ def capo_note(capo: int, concert_key: str, shapes_key: str) -> str:
 def build_song_pro(title: str, artist: str, sections, chord_map,
                    lyrics_only: bool = False, first_slide_notes: str | None = None,
                    opening_name: str = 'Opening', opening_count: int = 2,
-                   case: str = 'upper'):
+                   case: str = 'upper', style: dict | None = None,
+                   music_key: str | None = None):
     """
     Build a single .pro file with lyrics + optionally embedded chords.
     Prepends `opening_count` blank slides (default 2) in an `opening_name`
@@ -778,7 +780,8 @@ def build_song_pro(title: str, artist: str, sections, chord_map,
     # Notes go on the first slide: stage display only, never audience.
     slide_notes = {0: first_slide_notes} if first_slide_notes else None
     return build_pro_file(title, all_sections, arrangement_name="DoubleThickTheme",
-                          chord_data=chord_data, slide_notes=slide_notes, case=case)
+                          chord_data=chord_data, slide_notes=slide_notes, case=case,
+                          style=style, music_key=None if lyrics_only else music_key)
 
 
 # ────────────────────────────────────────────────────────────────
@@ -793,7 +796,8 @@ def _safe_filename(name: str) -> str:
 
 def process_file(filepath: str, target_key: str = None, output_dir: str = None,
                  lyrics_only: bool = False, source_key: str = None, capo: int = 0,
-                 opening_name: str = 'Opening', opening_count: int = 2, case: str = 'upper'):
+                 opening_name: str = 'Opening', opening_count: int = 2, case: str = 'upper',
+                 style: dict | None = None):
     """
     target_key : CONCERT key to output in (default: the song's concert key).
     source_key : key the chart's chord shapes are written in. ChordPresenter
@@ -855,7 +859,7 @@ def process_file(filepath: str, target_key: str = None, output_dir: str = None,
     song_data   = build_song_pro(display_name, artist, sections, chord_map,
                                   lyrics_only=lyrics_only, first_slide_notes=notes,
                                   opening_name=opening_name, opening_count=opening_count,
-                                  case=case)
+                                  case=case, style=style, music_key=shapes_key)
 
     with open(file_path, 'wb') as f:
         f.write(song_data)
@@ -894,6 +898,8 @@ def main():
             opening['opening_count'] = int(args[i + 1]); i += 2
         elif args[i] == '--case' and i + 1 < len(args):
             opening['case'] = args[i + 1]; i += 2
+        elif args[i] == '--style' and i + 1 < len(args):
+            opening['style'] = json.loads(args[i + 1]); i += 2
         else:
             filtered.append(args[i]); i += 1
     args = filtered

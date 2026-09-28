@@ -9,11 +9,12 @@ import {
 } from "./music";
 import { buildPrintHtml } from "./print";
 import {
-  NotesMode, RenderOpts, RhythmMode, TextCase, chordNames, importToEditorText,
+  NotesMode, RenderOpts, RhythmMode, SlideStyle, TextCase, chordNames, importToEditorText,
   parseEditorText, parsePcoChart, resolveArrangement, toChordOverLyric, toSongJson,
 } from "./chordpro";
 import PcoBrowser, { PcoLoadedSong } from "./PcoBrowser";
 import SlideEditor from "./SlideEditor";
+import ExportDialog from "./ExportDialog";
 
 // Sentinel used to join a slide's lyric lines into one exportable chart line
 // when a slide has 2+ lines (Edit .pro mode). U+E000 (Private Use Area) never
@@ -122,6 +123,16 @@ interface AppConfig {
   text_case: TextCase;
   rhythm_marks: RhythmMode;
   chord_notes: NotesMode;
+  /** Lyric text: PostScript name (what ProPresenter looks up) + family. */
+  font_name: string;
+  font_family: string;
+  font_size: number;
+  /** Black bar behind each line of lyrics. */
+  line_bars: boolean;
+  /** Let ProPresenter shrink text that overflows the box. */
+  shrink_to_fit: boolean;
+  /** Export dialog: suggest a file name ending in " - Key". */
+  filename_include_key: boolean;
 }
 
 // Defaults match the Rust Config defaults (src-tauri/src/main.rs).
@@ -129,7 +140,43 @@ const EMPTY_CONFIG: AppConfig = {
   output_dir: "", pco_app_id: "", pco_secret: "",
   opening_enabled: true, opening_name: "Opening", opening_count: 2,
   text_case: "upper", rhythm_marks: "instrumental", chord_notes: "beside",
+  font_name: "HelveticaNeue-Bold", font_family: "Helvetica Neue", font_size: 90,
+  line_bars: true, shrink_to_fit: true, filename_include_key: true,
 };
+
+/** Fonts that come with macOS (plus Tungsten, the original template's font).
+ *  name = PostScript name, which is what ProPresenter looks fonts up by. */
+const FONTS: { label: string; name: string; family: string }[] = [
+  { label: "Helvetica Neue Bold",   name: "HelveticaNeue-Bold",   family: "Helvetica Neue" },
+  { label: "Helvetica Neue Medium", name: "HelveticaNeue-Medium", family: "Helvetica Neue" },
+  { label: "Avenir Next Bold",      name: "AvenirNext-Bold",      family: "Avenir Next" },
+  { label: "Avenir Next Demi Bold", name: "AvenirNext-DemiBold",  family: "Avenir Next" },
+  { label: "Futura Bold",           name: "Futura-Bold",          family: "Futura" },
+  { label: "Futura Medium",         name: "Futura-Medium",        family: "Futura" },
+  { label: "Gill Sans Bold",        name: "GillSans-Bold",        family: "Gill Sans" },
+  { label: "Arial Bold",            name: "Arial-BoldMT",         family: "Arial" },
+  { label: "Verdana Bold",          name: "Verdana-Bold",         family: "Verdana" },
+  { label: "Tungsten Narrow Bold",  name: "TungstenNarrow-Bold",  family: "Tungsten Narrow" },
+];
+
+/** Is a font family installed? Text measured in it comes out a different
+ *  width than in the generic fallbacks only if the browser actually has it. */
+function fontInstalled(family: string): boolean {
+  const ctx = document.createElement("canvas").getContext("2d");
+  if (!ctx || !family.trim()) return false;
+  const sample = "mmmmmmmmmmlli WWW 0123456789 Hallelujah";
+  return ["monospace", "serif", "sans-serif"].some(generic => {
+    ctx.font = `bold 40px ${generic}`;
+    const base = ctx.measureText(sample).width;
+    ctx.font = `bold 40px "${family.replace(/"/g, "")}", ${generic}`;
+    return ctx.measureText(sample).width !== base;
+  });
+}
+
+const styleOf = (c: AppConfig): SlideStyle => ({
+  font_name: c.font_name, font_family: c.font_family, font_size: c.font_size,
+  line_bars: c.line_bars, shrink_to_fit: c.shrink_to_fit,
+});
 
 /** A song loaded into the slide editor, from any source. */
 interface SongDoc {
@@ -276,6 +323,53 @@ function PreferencesPanel({
         {/* Slides tab */}
         {tab === "slides" && (
           <div className="prefs-body">
+            <div className="prefs-row">
+              <span className="prefs-label">Lyrics font</span>
+              <div className="prefs-inline">
+                <select className="key-select prefs-select"
+                        value={FONTS.some(f => f.name === local.font_name) ? local.font_name : "custom"}
+                        onChange={e => {
+                          const f = FONTS.find(x => x.name === e.target.value);
+                          if (f) setLocal(prev => ({ ...prev, font_name: f.name, font_family: f.family }));
+                          else set("font_name", "");
+                        }}>
+                  {FONTS.map(f => <option key={f.name} value={f.name}>{f.label}</option>)}
+                  <option value="custom">Other…</option>
+                </select>
+                <input className="url-input prefs-num" type="number" min={20} max={300}
+                       value={local.font_size} title="Size in points (on a 1920×1080 slide)"
+                       onChange={e => set("font_size", Math.max(8, Math.min(400, Number(e.target.value) || 90)))} />
+                <span className="prefs-hint">pt</span>
+              </div>
+              {!FONTS.some(f => f.name === local.font_name) && (
+                <div className="prefs-inline">
+                  <input className="url-input" placeholder="PostScript name, e.g. Montserrat-Bold"
+                         value={local.font_name} onChange={e => set("font_name", e.target.value)} />
+                  <input className="url-input" placeholder="Family, e.g. Montserrat"
+                         value={local.font_family} onChange={e => set("font_family", e.target.value)} />
+                </div>
+              )}
+              <div className="font-sample" style={{ fontFamily: `"${local.font_family}", sans-serif`,
+                   fontWeight: /bold|black|heavy|demi/i.test(local.font_name) ? 700 : 500 }}>
+                COME, LET US WORSHIP OUR KING
+              </div>
+              <div className={`prefs-hint${fontInstalled(local.font_family) ? "" : " prefs-hint--warn"}`}>
+                {fontInstalled(local.font_family)
+                  ? "✓ Installed on this Mac. The computer running ProPresenter needs it too."
+                  : "⚠ Not found on this Mac — ProPresenter would substitute another font."}
+              </div>
+              <label className="prefs-check">
+                <input type="checkbox" checked={local.shrink_to_fit}
+                       onChange={e => set("shrink_to_fit", e.target.checked)} />
+                <span className="prefs-hint">Shrink lines that don't fit (ProPresenter's "scale font down")</span>
+              </label>
+              <label className="prefs-check">
+                <input type="checkbox" checked={local.line_bars}
+                       onChange={e => set("line_bars", e.target.checked)} />
+                <span className="prefs-hint">Black bar behind each line of lyrics</span>
+              </label>
+            </div>
+
             <div className="prefs-row">
               <label className="prefs-check">
                 <input type="checkbox" checked={local.opening_enabled}
@@ -703,8 +797,17 @@ export default function App() {
   }, [exportKey, exportCapo, detectedKey, lyricsOnly, config.rhythm_marks, config.chord_notes]);
 
   // ── Export the edited slides (all sources) ─────────────────────
-  const generateFromEditor = useCallback(async () => {
+  const [showExport, setShowExport] = useState(false);
+  const generateFromEditor = useCallback(async (choice: { fileName: string; folder: string; includeKey: boolean }) => {
     if (!doc) return;
+    setShowExport(false);
+    setOutputDir(choice.folder);
+    // Remember the "include key" choice for next time.
+    if (choice.includeKey !== config.filename_include_key) {
+      const next = { ...config, filename_include_key: choice.includeKey };
+      setConfig(next);
+      invoke("save_config", { config: next }).catch(() => { /* not critical */ });
+    }
     const order = resolveArrangement(doc.order.split(",").filter(s => s.trim()), sections).order;
     const song = toSongJson(sections, renderOpts, {
       title: doc.title, artist: doc.artist, key: exportKey, capo: exportCapo,
@@ -713,17 +816,18 @@ export default function App() {
       opening: { name: config.opening_name.trim() || "Opening",
                  count: config.opening_enabled ? config.opening_count : 0 },
       arrangement: order.length ? order : undefined,
+      style: styleOf(config), chordKey: renderOpts.shapesKey, fileName: choice.fileName,
     });
     setStatus("running"); setMessage("Generating…");
     try {
-      const out = await invoke<string>("generate_from_song", { songJson: JSON.stringify(song), outputDir });
+      const out = await invoke<string>("generate_from_song", { songJson: JSON.stringify(song), outputDir: choice.folder });
       setStatus("ok");
       const match = out.match(/→\s+(.+\.pro)/);
       setMessage(match ? `Saved: ${match[1]}` : (out.trim() || "Done!"));
     } catch (err) {
       setStatus("err"); setMessage(String(err));
     }
-  }, [doc, sections, renderOpts, exportKey, exportCapo, config, outputDir]);
+  }, [doc, sections, renderOpts, exportKey, exportCapo, config]);
 
   // ── URL mode: fetch ────────────────────────────────────────────
   const fetchEW = useCallback(async () => {
@@ -780,7 +884,8 @@ export default function App() {
   // The editor belongs to the tab its song came from.
   const docHere     = doc && doc.source === mode ? doc : null;
   const hasSlides   = sections.some(s => s.slides.length > 0);
-  const canGenerate = hasOutputDir && status !== "running" && Boolean(docHere) && hasSlides && !isFetching;
+  // No output folder needed up front: the export dialog lets you pick one.
+  const canGenerate = status !== "running" && Boolean(docHere) && hasSlides && !isFetching;
   const canPrint    = Boolean(docHere) && hasSlides;
 
   // Key of the chord shapes written out for the current key + capo.
@@ -802,6 +907,7 @@ export default function App() {
       onLinesPerSlideChange={setLinesPerSlide}
       render={renderOpts}
       textCase={config.text_case}
+      slideStyle={styleOf(config)}
     />
   );
 
@@ -814,6 +920,17 @@ export default function App() {
           initialTab={prefsTab}
           onSave={handleConfigSave}
           onClose={() => setShowPrefs(false)}
+        />
+      )}
+
+      {showExport && docHere && (
+        <ExportDialog
+          baseName={docHere.artist ? `${docHere.title} - ${docHere.artist}` : docHere.title}
+          keyLabel={exportKey ? `${exportKey}${exportCapo ? ` (Capo ${exportCapo})` : ""}` : ""}
+          folder={outputDir}
+          includeKey={config.filename_include_key}
+          onCancel={() => setShowExport(false)}
+          onExport={generateFromEditor}
         />
       )}
 
@@ -1144,24 +1261,14 @@ export default function App() {
             </div>
           </div>
 
-          {/* Generate */}
-          {!hasOutputDir && (
-            <p className="no-output-warning">
-              ⚠️ No output folder set.{" "}
-              <button className="link-btn" onClick={() => openPrefs()}>
-                Open Preferences
-              </button>{" "}
-              to choose where .pro files are saved.
-            </p>
-          )}
+          {/* Generate — the export dialog picks the file name and folder */}
           <div className="action-row">
             <button
               className={`generate-btn${!canGenerate ? " disabled" : ""}`}
-              onClick={generateFromEditor}
+              onClick={() => setShowExport(true)}
               disabled={!canGenerate}
-              title={!hasOutputDir ? "Set an output folder in Preferences first" : undefined}
             >
-              {status === "running" ? "⏳  Generating…" : "Generate .pro File →"}
+              {status === "running" ? "⏳  Generating…" : "Export .pro File…"}
             </button>
             <button
               className={`print-btn${!canPrint ? " disabled" : ""}`}

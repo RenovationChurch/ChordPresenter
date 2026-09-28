@@ -90,6 +90,22 @@ struct Config {
     // <i>notes</i> in charts: "beside" the chord, in "slide" notes, or "hide".
     #[serde(default = "default_chord_notes")]
     chord_notes: String,
+    // Lyric text style. font_name is the PostScript name ProPresenter looks up.
+    #[serde(default = "default_font_name")]
+    font_name: String,
+    #[serde(default = "default_font_family")]
+    font_family: String,
+    #[serde(default = "default_font_size")]
+    font_size: f64,
+    // Black bar behind each line of lyrics.
+    #[serde(default = "default_true")]
+    line_bars: bool,
+    // Let ProPresenter shrink text that doesn't fit the box.
+    #[serde(default = "default_true")]
+    shrink_to_fit: bool,
+    // Export dialog: add " - Key" to the suggested file name.
+    #[serde(default = "default_true")]
+    filename_include_key: bool,
 }
 
 fn default_true() -> bool { true }
@@ -98,6 +114,9 @@ fn default_opening_count() -> u32 { 2 }
 fn default_text_case() -> String { "upper".into() }
 fn default_rhythm_marks() -> String { "instrumental".into() }
 fn default_chord_notes() -> String { "beside".into() }
+fn default_font_name() -> String { "HelveticaNeue-Bold".into() }
+fn default_font_family() -> String { "Helvetica Neue".into() }
+fn default_font_size() -> f64 { 90.0 }
 
 impl Default for Config {
     fn default() -> Self {
@@ -118,7 +137,20 @@ impl Config {
         cmd.arg("--opening-name").arg(&self.opening_name);
         if with_case && ["upper", "asis", "line"].contains(&self.text_case.as_str()) {
             cmd.arg("--case").arg(&self.text_case);
+            cmd.arg("--style").arg(self.style_json());
         }
+    }
+
+    /// Font / size / bars as the JSON the Python builders take.
+    fn style_json(&self) -> String {
+        serde_json::json!({
+            "font_name": self.font_name,
+            "font_family": self.font_family,
+            "font_size": self.font_size,
+            "line_bars": self.line_bars,
+            "shrink_to_fit": self.shrink_to_fit,
+        })
+        .to_string()
     }
 }
 
@@ -267,6 +299,12 @@ fn run_conversion(
     load_config().slide_args(&mut cmd, true);
 
     run_python(&app, cmd, "run_conversion")
+}
+
+/// For the export dialog's "replace existing file?" warning.
+#[tauri::command]
+fn path_exists(path: String) -> bool {
+    std::path::Path::new(&path).exists()
 }
 
 #[tauri::command]
@@ -517,6 +555,7 @@ fn main() {
             parse_pro,
             pco,
             generate_from_song,
+            path_exists,
             open_print_view,
             get_config,
             save_config,

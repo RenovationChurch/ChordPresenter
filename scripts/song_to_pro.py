@@ -16,6 +16,10 @@ Song JSON:
   "notes": "optional stage-display note for the first slide",
   "text_case": "upper",                      // or "asis", "line"
   "opening": {"name": "Opening", "count": 2}, // count 0 = no blank slides
+  "style": {"font_name": "HelveticaNeue-Bold", "font_family": "Helvetica Neue",
+            "font_size": 110, "line_bars": true, "shrink_to_fit": true},
+  "chord_key": "G",                          // key the chords are written in
+  "file_name": "Amazing Grace - G",          // optional; ".pro" is added
   "sections": [
     {"name": "Verse 1", "slides": [
       {"lines": [{"text": "Amazing grace how sweet the sound",
@@ -127,7 +131,9 @@ def build_from_song(song: dict) -> bytes:
                           chord_data=chord_data,
                           slide_notes=slide_notes or None,
                           arrangement_order=order or None,
-                          case=case if case in ('upper', 'asis', 'line') else 'upper')
+                          case=case if case in ('upper', 'asis', 'line') else 'upper',
+                          style=song.get('style') or None,
+                          music_key=None if song.get('lyrics_only') else song.get('chord_key'))
 
 
 def display_name(song: dict) -> str:
@@ -136,6 +142,11 @@ def display_name(song: dict) -> str:
 
 
 def output_name(song: dict) -> str:
+    """The .pro file name: the one chosen in the export dialog, or
+    "Title - Artist - Key (Capo N).pro". Never a path — separators are removed."""
+    chosen = _safe_filename(str(song.get('file_name') or '')).strip(' .')
+    if chosen:
+        return chosen if chosen.lower().endswith('.pro') else chosen + '.pro'
     display = display_name(song)
     key = _safe_filename(song.get('key') or '')
     capo = int(song.get('capo') or 0)

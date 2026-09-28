@@ -808,3 +808,26 @@ body { background: var(--bg); color: var(--text); overflow-y: auto; }
 .prefs-inline .prefs-num { flex: 0 0 64px; }
 .prefs-inline .prefs-hint { white-space: nowrap; }
 .prefs-select { width: 100%; }
+
+/* Preview: lyric text in the chosen font; black bars when they're on. */
+.pv-slide { background: #374151; }
+.pv-slide--bars .pv-text { background: #000; }
+
+/* Preferences → Slides: font */
+.font-sample {
+  margin-top: 6px; padding: 10px 12px; border-radius: 8px;
+  background: #111827; color: #fff; font-size: 22px; text-align: center;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.prefs-hint--warn { color: #b45309; }
+
+/* Export dialog */
+.export-panel { max-width: 560px; }
+.export-name-row { display: flex; align-items: center; gap: 6px; }
+.export-name-row .url-input { min-width: 0; }
+.export-suffix { font-size: 13px; color: var(--text-muted); white-space: nowrap; }
+.export-warn {
+  font-size: 12px; color: #92400e; background: #fffbeb;
+  border: 1px solid #fcd34d; border-radius: 8px; padding: 8px 10px;
+}
+.prefs-save.disabled { opacity: 0.4; cursor: not-allowed; }

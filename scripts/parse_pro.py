@@ -344,9 +344,11 @@ def _decode_range(range_bytes: bytes) -> tuple[int, int] | None:
             start = val
         elif field == 2:
             end = val
-    if start is None or end is None:
+    # proto3 leaves out zero values: a range starting at character 0 (a chord
+    # on the first letter) has no start field at all.
+    if end is None:
         return None
-    return start, end
+    return start or 0, end
 
 
 def _parse_slide_chords(slide_blob: bytes) -> dict[int, str]:
