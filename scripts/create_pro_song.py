@@ -116,6 +116,7 @@ RTF_HEADER = _rtf_header(DEFAULT_STYLE)
 
 _UNICODE_MAP = str.maketrans({
     '‘': "'",  '’': "'",   # curly single quotes → straight
+    'ʼ': "'",  '′': "'",   # modifier-letter apostrophe, prime → straight
     '“': '"',  '”': '"',   # curly double quotes → straight
     '–': '-',  '—': '--',  # en/em dash → hyphen
     '…': '...', ' ': ' ',  # ellipsis, non-breaking space
@@ -435,7 +436,12 @@ def _rtf_escape(text):
         elif ch == '\n':
             out.append('\\\n')
         elif ord(ch) > 127:
-            out.append(f'\\u{ord(ch) if ord(ch) < 32768 else ord(ch) - 65536}?')
+            # RTF \uN? takes signed 16-bit UTF-16 units, so characters past
+            # U+FFFF (emoji) are written as a surrogate pair.
+            units = ch.encode('utf-16-be')
+            for i in range(0, len(units), 2):
+                n = int.from_bytes(units[i:i + 2], 'big')
+                out.append(f'\\u{n - 65536 if n > 32767 else n}?')
         else:
             out.append(ch)
     return ''.join(out)

@@ -241,6 +241,43 @@ fn script_path(app: &tauri::AppHandle, name: &str) -> Result<String, String> {
         .ok_or_else(|| format!("Bundled script not found: {}", bundled))
 }
 
+// ── Python interpreter ────────────────────────────────────────────────────────
+
+/// The Python to run the scripts with: the one bundled in the app for this
+/// Mac's chip (src-tauri/python-runtime/<arch>/, made by
+/// scripts/build/bundle_python.sh), else the system `python3` — so dev mode
+/// works before the runtime has been bundled.
+fn python_command(app: &tauri::AppHandle) -> Command {
+    let rel = format!("python-runtime/{}/bin/python3.13", std::env::consts::ARCH);
+
+    #[cfg(debug_assertions)]
+    let bundled = {
+        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(&rel);
+        Some(p).filter(|p| p.exists())
+    };
+    #[cfg(not(debug_assertions))]
+    let bundled = app.path_resolver().resolve_resource(&rel).filter(|p| p.exists());
+
+    match bundled {
+        Some(python) => {
+            log(app, "PYTHON", &format!("bundled: {}", python.display()));
+            let mut cmd = Command::new(python);
+            // Keep the bundled interpreter self-contained: ignore the user's
+            // Python settings and packages, and don't write .pyc files into
+            // the (signed) app bundle.
+            cmd.env_remove("PYTHONHOME")
+                .env_remove("PYTHONPATH")
+                .env("PYTHONNOUSERSITE", "1")
+                .env("PYTHONDONTWRITEBYTECODE", "1");
+            cmd
+        }
+        None => {
+            log(app, "PYTHON", "bundled runtime not found — using system python3");
+            Command::new("python3")
+        }
+    }
+}
+
 // ── Subprocess helper ─────────────────────────────────────────────────────────
 
 struct RunResult {
@@ -252,7 +289,7 @@ struct RunResult {
 fn run_python(app: &tauri::AppHandle, mut cmd: Command, label: &str) -> Result<String, String> {
     log(app, "RUN", &format!("{}: {:?}", label, cmd));
     let output = cmd.output().map_err(|e| {
-        let msg = format!("Could not launch python3: {}", e);
+        let msg = format!("Could not launch Python: {}", e);
         log(app, "ERROR", &msg);
         msg
     })?;
@@ -288,7 +325,7 @@ fn run_conversion(
     lyrics_only: Option<bool>,
 ) -> Result<String, String> {
     let script = script_path(&app, "md_to_pro.py")?;
-    let mut cmd = Command::new("python3");
+    let mut cmd = python_command(&app);
     cmd.arg(&script).arg(&md_path);
 
     if let Some(ref key) = target_key {
@@ -322,7 +359,7 @@ fn pro_key(
     }
     let canonical = p.canonicalize().map_err(|e| format!("Invalid path: {}", e))?;
     let script = script_path(&app, "pro_key.py")?;
-    let mut cmd = Command::new("python3");
+    let mut cmd = python_command(&app);
     cmd.arg(&script).arg(canonical.to_string_lossy().to_string());
     for (flag, value) in [("--user", user_key), ("--original", original_key)] {
         if let Some(v) = value.filter(|v| !v.trim().is_empty()) {
@@ -359,7 +396,7 @@ fn fetch_ew_preview(app: tauri::AppHandle, url: String) -> Result<String, String
         return Err("URL must start with http:// or https://".into());
     }
     let script = script_path(&app, "ew_fetch.py")?;
-    let mut cmd = Command::new("python3");
+    let mut cmd = python_command(&app);
     cmd.arg(&script).arg("--url").arg(u).arg("--preview");
     run_python(&app, cmd, "fetch_ew_preview")
         .map(|s| s.trim().to_string())
@@ -388,7 +425,7 @@ fn generate_from_url(
         .map_err(|e| format!("Could not write temp file: {}", e))?;
 
     let script = script_path(&app, "ew_fetch.py")?;
-    let mut cmd = Command::new("python3");
+    let mut cmd = python_command(&app);
     cmd.arg(&script)
         .arg("--chart-file").arg(&tmp_path)
         .arg("--title").arg(&title)
@@ -457,7 +494,7 @@ fn pco(
         return Err(format!("Unknown Planning Center command: {}", command));
     }
     let script = script_path(&app, "pco.py")?;
-    let mut cmd = Command::new("python3");
+    let mut cmd = python_command(&app);
     cmd.arg(&script).arg(&command);
     for (flag, value) in [("--query", query), ("--song", song),
                           ("--service-type", service_type), ("--plan", plan)] {
@@ -488,7 +525,7 @@ fn generate_from_song(
         .map_err(|e| format!("Could not write temp file: {}", e))?;
 
     let script = script_path(&app, "song_to_pro.py")?;
-    let mut cmd = Command::new("python3");
+    let mut cmd = python_command(&app);
     cmd.arg(&script)
         .arg("--song-json").arg(&tmp_path)
         .arg("--out").arg(output_dir.trim());
@@ -508,7 +545,7 @@ fn parse_pro(app: tauri::AppHandle, pro_path: String) -> Result<String, String> 
         return Err(format!("File not found: {}", pro_path));
     }
     let script = script_path(&app, "parse_pro.py")?;
-    let mut cmd = Command::new("python3");
+    let mut cmd = python_command(&app);
     cmd.arg(&script).arg(canonical.to_string_lossy().to_string());
     load_config().slide_args(&mut cmd, false);
     run_python(&app, cmd, "parse_pro")

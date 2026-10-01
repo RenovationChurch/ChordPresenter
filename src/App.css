@@ -872,3 +872,10 @@ body { background: var(--bg); color: var(--text); overflow-y: auto; }
 .arr-count--none { font-weight: 500; color: #b45309; }
 .pro-key-row .field-body { flex-wrap: wrap; gap: 8px; }
 .pro-key-row .key-select { width: auto; }
+
+/* ── Paste mode ── */
+.paste-meta { display: flex; gap: 10px; }
+.paste-meta .url-input { flex: 1; }
+.paste-textarea { min-height: 260px; }
+.paste-use-btn { margin-top: 10px; align-self: flex-end; }
+.paste-label-row { display: flex; justify-content: space-between; align-items: center; }

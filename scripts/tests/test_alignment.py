@@ -15,7 +15,7 @@ import unittest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from create_pro_song import build_slide                      # noqa: E402
-from md_to_pro import parse_md_song, _collapse_spaces         # noqa: E402
+from md_to_pro import parse_md_song, _squeeze_spaces         # noqa: E402
 from parse_pro import (_parse_slide_chords, _slide_lyric_lines,  # noqa: E402
                        parse_pro_file)
 from song_to_pro import build_from_song, layout_slide         # noqa: E402
@@ -63,7 +63,7 @@ class ChordOverLyricMapping(unittest.TestCase):
         self.assertEqual(chord_targets(lyric, pos), {'D': 'That', 'Em': 'save', 'G': 'wret'})
 
     def test_chord_inside_a_gap_lands_on_next_word(self):
-        text, pos = _collapse_spaces('gave    me', {6: 'Dm'})
+        text, pos = _squeeze_spaces('gave    me', {6: 'Dm'})
         self.assertEqual(text, 'gave me')
         self.assertEqual(chord_targets(text, pos), {'Dm': 'me'})
 

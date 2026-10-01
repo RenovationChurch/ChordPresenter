@@ -34,10 +34,7 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
-      - name: Python tests
-        run: python3 -m unittest discover -s scripts/tests -v
-
+          python-version: "3.13"
       - uses: pnpm/action-setup@v4
         with:
           version: 10
@@ -46,6 +43,12 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+
+      # Upstream's parity tests call Node (tests/*.ts), so this runs after setup-node.
+      - name: Python tests
+        run: |
+          python3 -m unittest discover -s scripts/tests -v
+          python3 -m unittest discover -s tests -v
       - name: Slide editor tests
         run: pnpm test
       - name: Type-check and build frontend
@@ -74,6 +77,11 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: src-tauri
+
+      # A trimmed, checksum-verified Python for each chip goes inside the app,
+      # so nobody has to install Python (scripts/build/bundle_python.sh).
+      - name: Bundle Python
+        run: scripts/build/bundle_python.sh
 
       - name: Build app
         run: pnpm tauri build --target universal-apple-darwin
