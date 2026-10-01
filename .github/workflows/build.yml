@@ -1,0 +1,102 @@
+# Checks every PR, then builds a downloadable macOS app.
+#
+# Where to get the build: open the PR → "Checks" tab → "Build" run → scroll to
+# "Artifacts" → ChordPresenter-macOS-…  (a .zip containing the .dmg).
+#
+# The app is not code-signed, so macOS will block it on first launch —
+# see "Installing a test build" in README.md.
+
+name: Build
+
+on:
+  pull_request:
+    paths-ignore: ["**.md", "LICENSE"]
+  push:
+    branches: [main]
+    paths-ignore: ["**.md", "LICENSE"]
+  workflow_dispatch:          # "Run workflow" button on the Actions tab
+
+# A newer push to the same PR cancels the older, now-useless build.
+concurrency:
+  group: build-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # Fast, cheap Linux job: if tests or type-checking fail, don't spend
+  # (10×-billed) macOS minutes on a build.
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # Upstream's parity tests call Node (tests/*.ts), so this runs after setup-node.
+      - name: Python tests
+        run: |
+          python3 -m unittest discover -s scripts/tests -v
+          python3 -m unittest discover -s tests -v
+      - name: Slide editor tests
+        run: pnpm test
+      - name: Type-check and build frontend
+        run: pnpm build
+
+  macos:
+    needs: checks
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # Both CPU targets → one "universal" app that runs on Apple Silicon
+      # (M1–M4) and older Intel Macs.
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      # A trimmed, checksum-verified Python for each chip goes inside the app,
+      # so nobody has to install Python (scripts/build/bundle_python.sh).
+      - name: Bundle Python
+        run: scripts/build/bundle_python.sh
+
+      - name: Build app
+        run: pnpm tauri build --target universal-apple-darwin
+
+      # On PRs, HEAD is a temporary merge commit — name the build after the
+      # PR's own latest commit instead, so it matches what you see on GitHub.
+      - name: Name the build after its commit
+        id: meta
+        env:
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: echo "short_sha=${SHA:0:7}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ChordPresenter-macOS-${{ steps.meta.outputs.short_sha }}
+          path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+          retention-days: 14

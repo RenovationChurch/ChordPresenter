@@ -9,7 +9,7 @@ Outputs JSON to stdout:
     {
       "index": 0,
       "group": "Verse 1",                             // real group/section name
-      "lines": ["LYRIC LINE ONE", "LYRIC LINE TWO"],   // 1 or 2 lyric lines per slide
+      "lines": ["LYRIC LINE ONE", "LYRIC LINE TWO"],   // 1+ lyric lines per slide
       "chords": "F   Bb   C"                           // existing stage-display chords, if any
     },
     ...
@@ -28,10 +28,14 @@ slide's own embedded RTF block.
 
 from __future__ import annotations
 
+import os
 import re
 import sys
 import json
 import struct
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from create_pro_song import read_music  # noqa: E402
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -344,9 +348,11 @@ def _decode_range(range_bytes: bytes) -> tuple[int, int] | None:
             start = val
         elif field == 2:
             end = val
-    if start is None or end is None:
+    # proto3 leaves out zero values: a range starting at character 0 (a chord
+    # on the first letter) has no start field at all.
+    if end is None:
         return None
-    return start, end
+    return start or 0, end
 
 
 def _parse_slide_chords(slide_blob: bytes) -> dict[int, str]:
@@ -396,19 +402,22 @@ def _chord_positions_to_line(positions: dict[int, str]) -> str:
 
 def _slide_lyric_lines(slide_blob: bytes) -> list[str]:
     """Extract this slide's own lyric line(s) from its RTF block."""
-    rtf_blocks = _find_rtf_blocks(slide_blob)
+    # Only look inside the slide's visible elements (PresentationSlide.base_slide):
+    # its notes (PresentationSlide.notes) are RTF too, and must not be read as lyrics.
+    visible = _get_path(slide_blob, [10, 23, 2, 1]) or slide_blob
+    rtf_blocks = _find_rtf_blocks(visible)
     lines: list[str] = []
     for block in rtf_blocks:
         block_lines = _filter_lines(_extract_rtf_text(block))
         lines.extend(l for l in block_lines if 0 < len(l) < 200)
-    return lines[:2]
+    return lines
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MAIN PARSER
 # ══════════════════════════════════════════════════════════════════════════════
 
-def parse_pro_file(path: str) -> dict:
+def parse_pro_file(path: str, opening_name: str = 'Opening', opening_count: int = 2) -> dict:
     """
     Parse a ProPresenter .pro file and return:
     {
@@ -455,15 +464,20 @@ def parse_pro_file(path: str) -> dict:
     arrangement_order = _parse_arrangement_order(top)
     by_uuid = {gu: (name, slides) for gu, name, slides in groups}
     if arrangement_order and all(gu in by_uuid for gu in arrangement_order):
-        ordered_groups = [(gu, *by_uuid[gu]) for gu in arrangement_order]
+        # An arrangement can play a group more than once (Chorus after every
+        # verse) — list its slides once so they aren't duplicated on re-export.
+        ordered_groups = [(gu, *by_uuid[gu]) for gu in dict.fromkeys(arrangement_order)]
     else:
         ordered_groups = groups
 
     slides = []
     for i, (_gu, group_name, slide_uuids) in enumerate(ordered_groups):
-        # Skip the auto-generated 2-blank-slide "Opening" spacer — it isn't
-        # editable content and build_song_pro() always re-adds it on export.
-        if i == 0 and group_name == 'Opening' and len(slide_uuids) <= 2:
+        # Skip the auto-generated blank "Opening" spacer — it isn't editable
+        # content and export re-adds it (per the user's settings). Files made
+        # before the setting existed always used "Opening" with 2 slides.
+        if i == 0 and (group_name, len(slide_uuids)) in (
+                (opening_name, opening_count), ('Opening', 2)) and not any(
+                _slide_lyric_lines(slide_blobs.get(su, b'')) for su in slide_uuids):
             continue
         for su in slide_uuids:
             blob = slide_blobs.get(su)
@@ -480,7 +494,9 @@ def parse_pro_file(path: str) -> dict:
                 "chords": chords,
             })
 
-    return {"title": title, "slides": slides}
+    # The key the chords are written in, and the key ProPresenter shows them in.
+    original, user = read_music(data)
+    return {"title": title, "slides": slides, "key": {"original": original, "user": user}}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -493,8 +509,14 @@ def main():
         sys.exit(1)
 
     path = sys.argv[1]
+    opening = {}
+    args = sys.argv[2:]
+    for flag, key, conv in (('--opening-name', 'opening_name', str),
+                            ('--opening-count', 'opening_count', int)):
+        if flag in args and args.index(flag) + 1 < len(args):
+            opening[key] = conv(args[args.index(flag) + 1])
     try:
-        result = parse_pro_file(path)
+        result = parse_pro_file(path, **opening)
         print(json.dumps(result, ensure_ascii=False))
     except FileNotFoundError:
         print(json.dumps({"error": f"File not found: {path}"}))
